@@ -29,7 +29,7 @@ Injects developer-written or agent-written memory notes linked to specific AST n
 ## Component Map
 
 ```
-cmd/antigravity-link/       # CLI entry point (cobra)
+cmd/context-link/       # CLI entry point (cobra)
 internal/
   server/                   # MCP server, JSON-RPC handler (mcp-go)
   indexer/                  # Tree-sitter AST parsing, file walker

@@ -1,5 +1,5 @@
 BINARY_NAME := context-link
-CMD_PATH    := ./cmd/antigravity-link
+CMD_PATH    := ./cmd/context-link
 BUILD_DIR   := ./bin
 
 .PHONY: all build test lint clean vet coverage
