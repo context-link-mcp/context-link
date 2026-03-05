@@ -1,0 +1,37 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+context-link
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Config (user-specific)
+.context-link.yaml
+
+# Go
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test/build artifacts
+coverage.out
+coverage.html
+/dist/
+
+# ONNX model (will be fetched during build)
+*.onnx

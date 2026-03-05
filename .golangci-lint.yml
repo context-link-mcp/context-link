@@ -1,0 +1,30 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/context-link/context-link
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+
+run:
+  timeout: 5m
+  go: "1.22"
