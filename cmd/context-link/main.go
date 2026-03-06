@@ -19,6 +19,7 @@ import (
 	"github.com/context-link/context-link/internal/indexer/adapters"
 	"github.com/context-link/context-link/internal/server"
 	"github.com/context-link/context-link/internal/store"
+	"github.com/context-link/context-link/internal/vectorstore"
 )
 
 const version = "0.1.0"
@@ -29,6 +30,11 @@ var (
 	flagProjectRoot string
 	flagLogLevel    string
 	flagConfigFile  string
+
+	// Phase 3: semantic search model paths.
+	flagModelPath  string
+	flagVocabPath  string
+	flagORTLibPath string
 )
 
 func main() {
@@ -88,6 +94,13 @@ func init() {
 	indexCmd.Flags().StringVar(&flagRepoName, "repo-name", "", "repository name for multi-repo namespacing (default: directory name)")
 	indexCmd.Flags().IntVar(&flagWorkers, "workers", 4, "number of parallel worker goroutines for indexing")
 
+	// Phase 3: semantic search flags (shared by serve and index).
+	for _, cmd := range []*cobra.Command{serveCmd, indexCmd} {
+		cmd.Flags().StringVar(&flagModelPath, "model-path", "", "path to all-MiniLM-L6-v2.onnx (enables semantic search)")
+		cmd.Flags().StringVar(&flagVocabPath, "vocab-path", "", "path to vocab.txt for the ONNX model tokenizer")
+		cmd.Flags().StringVar(&flagORTLibPath, "ort-lib-path", "", "path to OnnxRuntime shared library (default: system search path)")
+	}
+
 	rootCmd.AddCommand(serveCmd, indexCmd, versionCmd)
 }
 
@@ -134,11 +147,35 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Apply CLI flag overrides for model paths.
+	if flagModelPath != "" {
+		cfg.ModelPath = flagModelPath
+	}
+	if flagVocabPath != "" {
+		cfg.VocabPath = flagVocabPath
+	}
+	if flagORTLibPath != "" {
+		cfg.ORTLibPath = flagORTLibPath
+	}
+
+	// Create embedder if configured; otherwise skip embedding generation.
+	var embedder vectorstore.Embedder
+	if cfg.ModelPath != "" && cfg.VocabPath != "" {
+		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
+		if err != nil {
+			slog.Warn("embedding generation disabled: failed to create ONNX embedder", "error", err)
+		} else {
+			embedder = e
+			defer e.Close() //nolint:errcheck
+			slog.Info("embedding generation enabled", "model", cfg.ModelPath)
+		}
+	}
+
 	// Build language registry with default adapters.
 	registry := buildLanguageRegistry()
 
 	// Run the indexer.
-	idx := indexer.NewIndexer(registry, db, flagWorkers)
+	idx := indexer.NewIndexer(registry, db, flagWorkers, embedder)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -153,10 +190,11 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  Files indexed:    %d\n", stats.FilesIndexed)
 	fmt.Fprintf(os.Stderr, "  Files unchanged:  %d\n", stats.FilesUnchanged)
 	fmt.Fprintf(os.Stderr, "  Files skipped:    %d\n", stats.FilesSkipped)
-	fmt.Fprintf(os.Stderr, "  Symbols extracted: %d\n", stats.SymbolsExtracted)
-	fmt.Fprintf(os.Stderr, "  Dependencies:     %d\n", stats.DepsResolved)
-	fmt.Fprintf(os.Stderr, "  Errors:           %d\n", stats.Errors)
-	fmt.Fprintf(os.Stderr, "  Duration:         %s\n", stats.Duration)
+	fmt.Fprintf(os.Stderr, "  Symbols extracted:    %d\n", stats.SymbolsExtracted)
+	fmt.Fprintf(os.Stderr, "  Dependencies:         %d\n", stats.DepsResolved)
+	fmt.Fprintf(os.Stderr, "  Embeddings generated: %d\n", stats.EmbeddingsGenerated)
+	fmt.Fprintf(os.Stderr, "  Errors:               %d\n", stats.Errors)
+	fmt.Fprintf(os.Stderr, "  Duration:             %s\n", stats.Duration)
 
 	return nil
 }
@@ -216,8 +254,34 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Apply CLI flag overrides for model paths.
+	if flagModelPath != "" {
+		cfg.ModelPath = flagModelPath
+	}
+	if flagVocabPath != "" {
+		cfg.VocabPath = flagVocabPath
+	}
+	if flagORTLibPath != "" {
+		cfg.ORTLibPath = flagORTLibPath
+	}
+
+	// Create embedder if model paths are configured; otherwise semantic search
+	// will gracefully return a "not available" error from the tool handler.
+	var embedder vectorstore.Embedder
+	if cfg.ModelPath != "" && cfg.VocabPath != "" {
+		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
+		if err != nil {
+			slog.Warn("semantic search disabled: failed to create ONNX embedder", "error", err)
+		} else {
+			embedder = e
+			slog.Info("semantic search enabled", "model", cfg.ModelPath)
+		}
+	} else {
+		slog.Info("semantic search disabled: --model-path and --vocab-path not set")
+	}
+
 	// Build MCP server with all tools registered.
-	srv := server.New(cfg, db)
+	srv := server.New(cfg, db, embedder)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -21,6 +21,16 @@ type Config struct {
 	ProjectRoot string `mapstructure:"project_root"`
 	// LogLevel controls verbosity: "debug", "info", "warn", "error".
 	LogLevel string `mapstructure:"log_level"`
+
+	// Phase 3: Semantic search — leave empty to disable semantic search.
+
+	// ModelPath is the path to the all-MiniLM-L6-v2.onnx model file.
+	ModelPath string `mapstructure:"model_path"`
+	// VocabPath is the path to the accompanying vocab.txt tokenizer vocabulary.
+	VocabPath string `mapstructure:"vocab_path"`
+	// ORTLibPath is the path to the OnnxRuntime shared library.
+	// Leave empty to use the system default library search path.
+	ORTLibPath string `mapstructure:"ort_lib_path"`
 }
 
 // Load reads the configuration from the config file and environment variables.

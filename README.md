@@ -41,9 +41,9 @@ AI coding agents read entire files to understand context. This brute-force appro
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Phase 1 | Gateway Foundation (CLI, SQLite, MCP server) | Complete |
-| Phase 2 | Structural Indexer (Tree-sitter, symbol graph, deps) | Complete |
-| Phase 3 | Semantic Search (ONNX embeddings, sqlite-vec) | Planned |
+| Phase 1 | Gateway Foundation (CLI, SQLite, MCP server) | ✅ Complete |
+| Phase 2 | Structural Indexer (Tree-sitter, symbol graph, deps) | ✅ Complete |
+| Phase 3 | Semantic Search (ONNX embeddings, KNN vector search) | ✅ Complete |
 | Phase 4 | Memory Persistence (notes, stale detection) | Planned |
 | Phase 5 | Integration & Optimization | Planned |
 
@@ -51,10 +51,10 @@ AI coding agents read entire files to understand context. This brute-force appro
 
 | Tool | Description | Status |
 |------|-------------|--------|
-| `ping` | Health-check for connectivity validation | Implemented |
-| `read_architecture_rules` | Returns parsed ARCHITECTURE.md sections | Implemented |
-| `get_code_by_symbol` | Extracts exact code + transitive dependencies (BFS, depth 0-3) | Implemented |
-| `semantic_search_symbols` | Natural-language symbol discovery | Phase 3 |
+| `ping` | Health-check for connectivity validation | ✅ Implemented |
+| `read_architecture_rules` | Returns parsed ARCHITECTURE.md sections | ✅ Implemented |
+| `get_code_by_symbol` | Extracts exact code + transitive dependencies (BFS, depth 0-3) | ✅ Implemented |
+| `semantic_search_symbols` | Natural-language symbol discovery via local ONNX embeddings | ✅ Implemented |
 | `save_symbol_memory` | Attaches persistent notes to symbols | Phase 4 |
 | `get_symbol_memories` | Retrieves notes for a symbol or file | Phase 4 |
 
@@ -66,8 +66,8 @@ AI coding agents read entire files to understand context. This brute-force appro
 | Protocol | MCP via stdio (`mcp-go` v0.44.1) |
 | AST Parser | `go-tree-sitter` (language-agnostic via `LanguageAdapter` registry) |
 | Database | SQLite 3 (WAL mode, pure-Go driver via `modernc.org/sqlite`) |
-| Vector Engine | sqlite-vec (Phase 3) |
-| Embeddings | all-MiniLM-L6-v2 via ONNX Runtime (Phase 3) |
+| Vector Search | Go-side KNN over L2-normalized float32 BLOBs in `vec_symbols` table |
+| Embeddings | `all-MiniLM-L6-v2` via OnnxRuntime (`yalue/onnxruntime_go`), with BERT WordPiece tokenizer |
 
 ## Quickstart
 
@@ -103,6 +103,26 @@ Supports incremental re-indexing — only changed files are re-processed.
 
 The server communicates over stdio using the MCP protocol.
 
+### Enable Semantic Search (Phase 3)
+
+Semantic search requires the `all-MiniLM-L6-v2` ONNX model and OnnxRuntime. See [BUILDING.md](BUILDING.md) for download instructions.
+
+```bash
+# Index with embedding generation enabled
+./bin/context-link index \
+  --project-root /path/to/project \
+  --model-path /path/to/all-MiniLM-L6-v2.onnx \
+  --vocab-path /path/to/vocab.txt
+
+# Serve with semantic search enabled
+./bin/context-link serve \
+  --project-root /path/to/project \
+  --model-path /path/to/all-MiniLM-L6-v2.onnx \
+  --vocab-path /path/to/vocab.txt
+```
+
+If `--model-path` is not provided, `semantic_search_symbols` returns an informative error and all other tools continue to work normally.
+
 ### IDE Integration (Claude Code / VS Code)
 
 Add a `.mcp.json` file to your project root:
@@ -137,6 +157,17 @@ Then reload the VS Code window. The MCP tools will be available in Claude Code a
 |------|---------|-------------|
 | `--repo-name` | Directory name | Repository name for multi-repo namespacing |
 | `--workers` | `4` | Number of parallel worker goroutines |
+| `--model-path` | _(disabled)_ | Path to `all-MiniLM-L6-v2.onnx` — enables embedding generation |
+| `--vocab-path` | _(disabled)_ | Path to `vocab.txt` for the ONNX tokenizer |
+| `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library (optional if on system PATH) |
+
+**`serve` subcommand flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-path` | _(disabled)_ | Path to `all-MiniLM-L6-v2.onnx` — enables `semantic_search_symbols` |
+| `--vocab-path` | _(disabled)_ | Path to `vocab.txt` for the ONNX tokenizer |
+| `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library (optional if on system PATH) |
 
 ## Configuration
 
@@ -146,6 +177,11 @@ context-link can be configured via a `.context-link.yaml` file in the project ro
 db_path: .context-link.db
 project_root: .
 log_level: info
+
+# Phase 3: semantic search (optional — omit to disable)
+model_path: /path/to/all-MiniLM-L6-v2.onnx
+vocab_path: /path/to/vocab.txt
+ort_lib_path: ""  # leave empty to use system library search path
 ```
 
 Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_LINK_LOG_LEVEL=debug`).
@@ -161,7 +197,8 @@ context-link/
       adapters/               # LanguageAdapter implementations (TS, TSX, Go)
         queries/              # .scm Tree-sitter Scheme query files
     store/                    # SQLite schema, migrations, CRUD
-      migrations/             # Versioned SQL migration files
+      migrations/             # Versioned SQL migration files (001_initial, 002_vec_symbols)
+    vectorstore/              # Embedding generation + KNN vector search
     tools/                    # MCP tool definitions & handlers
     config/                   # Configuration loading (viper)
   pkg/models/                 # Shared types (Symbol, Memory, File, Dependency)

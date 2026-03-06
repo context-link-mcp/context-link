@@ -15,6 +15,7 @@ import (
 	"github.com/context-link/context-link/internal/config"
 	"github.com/context-link/context-link/internal/store"
 	"github.com/context-link/context-link/internal/tools"
+	"github.com/context-link/context-link/internal/vectorstore"
 )
 
 const (
@@ -24,13 +25,15 @@ const (
 
 // Server wraps the mcp-go MCPServer with context-link wiring.
 type Server struct {
-	mcp *server.MCPServer
-	cfg *config.Config
-	db  *store.DB
+	mcp      *server.MCPServer
+	cfg      *config.Config
+	db       *store.DB
+	embedder vectorstore.Embedder
 }
 
 // New creates and configures a new Server with all registered tools and prompts.
-func New(cfg *config.Config, db *store.DB) *Server {
+// embedder may be nil — semantic_search_symbols will return a "not available" error.
+func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder) *Server {
 	mcpServer := server.NewMCPServer(
 		serverName,
 		serverVersion,
@@ -38,9 +41,10 @@ func New(cfg *config.Config, db *store.DB) *Server {
 	)
 
 	s := &Server{
-		mcp: mcpServer,
-		cfg: cfg,
-		db:  db,
+		mcp:      mcpServer,
+		cfg:      cfg,
+		db:       db,
+		embedder: embedder,
 	}
 
 	s.registerTools()
@@ -61,6 +65,10 @@ func (s *Server) registerTools() {
 	repoName := filepath.Base(s.cfg.ProjectRoot)
 	tools.RegisterGetCodeTool(s.mcp, s.db, repoName)
 	slog.Debug("registered tool", "name", "get_code_by_symbol")
+
+	// Phase 3: Semantic search tool (embedder may be nil if model not configured).
+	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName)
+	slog.Debug("registered tool", "name", "semantic_search_symbols")
 }
 
 // registerPrompts registers the explore_codebase prompt that instructs the

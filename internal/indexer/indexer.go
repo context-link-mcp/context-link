@@ -12,34 +12,38 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/context-link/context-link/internal/store"
+	"github.com/context-link/context-link/internal/vectorstore"
 	"github.com/context-link/context-link/pkg/models"
 )
 
 // IndexStats reports the results of an indexing run.
 type IndexStats struct {
-	FilesDiscovered int           `json:"files_discovered"`
-	FilesIndexed    int           `json:"files_indexed"`
-	FilesSkipped    int           `json:"files_skipped"`
-	FilesUnchanged  int           `json:"files_unchanged"`
-	SymbolsExtracted int          `json:"symbols_extracted"`
-	DepsExtracted   int           `json:"deps_extracted"`
-	DepsResolved    int           `json:"deps_resolved"`
-	Duration        time.Duration `json:"duration"`
-	Errors          int           `json:"errors"`
+	FilesDiscovered    int           `json:"files_discovered"`
+	FilesIndexed       int           `json:"files_indexed"`
+	FilesSkipped       int           `json:"files_skipped"`
+	FilesUnchanged     int           `json:"files_unchanged"`
+	SymbolsExtracted   int           `json:"symbols_extracted"`
+	DepsExtracted      int           `json:"deps_extracted"`
+	DepsResolved       int           `json:"deps_resolved"`
+	EmbeddingsGenerated int          `json:"embeddings_generated"`
+	Duration           time.Duration `json:"duration"`
+	Errors             int           `json:"errors"`
 }
 
-// Indexer orchestrates the full indexing pipeline: walk → parse → extract → store.
+// Indexer orchestrates the full indexing pipeline: walk → parse → extract → store → embed.
 type Indexer struct {
 	registry  *LanguageRegistry
 	pools     *ParserPoolManager
 	extractor *Extractor
 	db        *store.DB
+	embedder  vectorstore.Embedder // nil = skip embedding generation
 	workers   int
 	repoRoot  string
 }
 
 // NewIndexer creates a new Indexer with the given configuration.
-func NewIndexer(registry *LanguageRegistry, db *store.DB, workers int) *Indexer {
+// embedder may be nil — embedding generation will be skipped.
+func NewIndexer(registry *LanguageRegistry, db *store.DB, workers int, embedder vectorstore.Embedder) *Indexer {
 	if workers <= 0 {
 		workers = 4
 	}
@@ -48,6 +52,7 @@ func NewIndexer(registry *LanguageRegistry, db *store.DB, workers int) *Indexer 
 		pools:     NewParserPoolManager(),
 		extractor: NewExtractor(),
 		db:        db,
+		embedder:  embedder,
 		workers:   workers,
 	}
 }
@@ -153,6 +158,15 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		slog.Warn("indexer: dependency resolution partially failed", "error", err)
 	}
 	stats.DepsResolved = resolved
+
+	// Phase 6: Generate embeddings for all newly indexed symbols.
+	if idx.embedder != nil {
+		indexedPaths := make([]string, 0, len(results))
+		for _, r := range results {
+			indexedPaths = append(indexedPaths, r.file.RelPath)
+		}
+		stats.EmbeddingsGenerated = idx.generateEmbeddings(ctx, repoName, indexedPaths)
+	}
 
 	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged
 	stats.Duration = time.Since(start)
@@ -350,4 +364,50 @@ func (idx *Indexer) getAllSymbolsWithDeps(ctx context.Context, repoName string, 
 	}
 
 	return allDeps, nil
+}
+
+// generateEmbeddings generates and stores vector embeddings for all symbols
+// belonging to the given file paths. Returns the count of embeddings stored.
+func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, filePaths []string) int {
+	embedded := 0
+	for _, path := range filePaths {
+		syms, err := store.GetSymbolsByFile(ctx, idx.db, repoName, path)
+		if err != nil {
+			slog.Warn("indexer: failed to load symbols for embedding", "file", path, "error", err)
+			continue
+		}
+
+		for i := 0; i < len(syms); i += vectorstore.DefaultBatchSize {
+			end := i + vectorstore.DefaultBatchSize
+			if end > len(syms) {
+				end = len(syms)
+			}
+			batch := syms[i:end]
+
+			texts := make([]string, len(batch))
+			for j, s := range batch {
+				texts[j] = vectorstore.SymbolEmbedText(s.Kind, s.QualifiedName, s.CodeBlock)
+			}
+
+			vecs, err := idx.embedder.EmbedBatch(ctx, texts)
+			if err != nil {
+				slog.Warn("indexer: embedding batch failed", "file", path, "error", err)
+				continue
+			}
+
+			for j, s := range batch {
+				if err := vectorstore.UpsertEmbedding(ctx, idx.db, s.ID, repoName, vecs[j]); err != nil {
+					slog.Warn("indexer: failed to upsert embedding", "symbol", s.QualifiedName, "error", err)
+					continue
+				}
+				embedded++
+			}
+		}
+
+		if embedded > 0 && embedded%100 == 0 {
+			slog.Info("indexer: embedding progress", "embeddings", embedded)
+		}
+	}
+	slog.Info("indexer: embedding complete", "embeddings_generated", embedded)
+	return embedded
 }

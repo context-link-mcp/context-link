@@ -30,7 +30,7 @@
 Thumbs.db
 
 # Test/build artifacts
-coverage.out
+*.out
 coverage.html
 /dist/
 

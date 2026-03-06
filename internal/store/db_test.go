@@ -42,7 +42,7 @@ func TestMigrate_Fresh(t *testing.T) {
 	require.NoError(t, err, "first migration run should succeed")
 
 	// Verify core tables exist.
-	tables := []string{"files", "symbols", "dependencies", "memories", "schema_version"}
+	tables := []string{"files", "symbols", "dependencies", "memories", "schema_version", "vec_symbols"}
 	for _, table := range tables {
 		var count int
 		err = db.QueryRow(
@@ -68,9 +68,9 @@ func TestMigrate_Idempotent(t *testing.T) {
 	err = store.Migrate(db)
 	require.NoError(t, err, "second run (idempotency) should also succeed")
 
-	// Verify schema_version has exactly one row per migration file.
-	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&count)
+	// Verify schema_version has exactly one row per migration file (no duplicates).
+	var total, distinct int
+	err = db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT filename) FROM schema_version`).Scan(&total, &distinct)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "should have exactly 1 migration recorded after 2 runs")
+	assert.Equal(t, total, distinct, "each migration file should be recorded exactly once (no duplicates)")
 }

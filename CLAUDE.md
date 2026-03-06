@@ -115,6 +115,6 @@ internal/tools/architecture.go     read_architecture_rules tool
 
 - **Phase 1 (Foundation):** Complete — CLI, SQLite, MCP server, ping, architecture tool
 - **Phase 2 (Indexer):** Complete — Tree-sitter parsing, symbol graph, BFS deps, get_code_by_symbol, 3 language adapters, 65 tests passing
-- **Phase 3 (Semantic Search):** Next — ONNX embeddings, sqlite-vec, semantic_search_symbols tool
+- **Phase 3 (Semantic Search):** Complete — ONNX embedder, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
 - **Phase 4 (Memory):** Planned — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Planned — performance optimization, integration testing, documentation

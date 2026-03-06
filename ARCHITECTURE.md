@@ -8,9 +8,9 @@ context-link is a local MCP (Model Context Protocol) server that acts as a struc
 
 The system implements a three-stage pipeline that progressively narrows the information delivered to the LLM:
 
-### Stage 1 — Semantic Scout (Discovery) [Phase 3]
+### Stage 1 — Semantic Scout (Discovery) [Implemented — Phase 3]
 
-Accepts natural-language queries from the AI agent. Uses local vector embeddings (all-MiniLM-L6-v2 via ONNX Runtime) stored in sqlite-vec to return matching symbol names **without reading file contents**. This dramatically reduces the search space before any code is fetched.
+Accepts natural-language queries from the AI agent. Uses local vector embeddings (`all-MiniLM-L6-v2` via OnnxRuntime) stored as BLOBs in the `vec_symbols` table. Go-side KNN search (dot-product over L2-normalized float32 vectors) returns matching symbol names **without reading file contents**, dramatically narrowing the search space.
 
 **Key tool:** `semantic_search_symbols`
 
@@ -58,12 +58,19 @@ internal/
     dependencies.go             # Dependency edge CRUD (insert, batch, reverse lookup, file-scoped delete)
     migrations/
       001_initial.sql           # Schema: files, symbols, dependencies, memories, indexes
+      002_vec_symbols.sql       # Schema: vec_symbols (float32 BLOB embeddings for KNN search)
+  vectorstore/                  # Phase 3: embedding generation + vector search
+    embedder.go                 # Embedder interface, MockEmbedder, SymbolEmbedText helper
+    tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding)
+    onnx.go                     # ONNXEmbedder (lazy ORT session, pre-alloc tensors, mean-pool + L2-norm)
+    vecstore.go                 # UpsertEmbedding, KNNSearch (Go-side dot-product), encode/decode BLOBs
   tools/
     ping.go                     # Health-check tool (status, version, uptime, runtime info)
     architecture.go             # read_architecture_rules tool (parses ARCHITECTURE.md → JSON sections)
     get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps, depth 0-3)
+    semantic_search.go          # semantic_search_symbols tool (embed query → KNN → join + filter symbols)
   config/
-    config.go                   # Viper-based config loading (.context-link.yaml, env vars)
+    config.go                   # Viper-based config loading (.context-link.yaml, env vars, model paths)
 pkg/models/
   models.go                     # Shared types: Symbol, Memory, File, Dependency, ToolMetadata
 testdata/
@@ -79,7 +86,7 @@ testdata/
 Agent Query
     |
     v
-semantic_search_symbols ──> sqlite-vec KNN search ──> [symbol names]  (Phase 3)
+semantic_search_symbols ──> embed query (ONNX) ──> Go KNN over vec_symbols ──> [symbol names]
     |
     v
 get_code_by_symbol ──> SQLite BFS dependency graph ──> [code + deps]
@@ -99,7 +106,7 @@ The unified SQLite database (`.context-link.db`) contains:
 - **symbols** — Every parsed code symbol with source location, code block, and content hash
 - **dependencies** — Directed call/extends/implements graph between symbols
 - **memories** — Agent/developer notes linked to symbols (Phase 4, schema exists)
-- **vec_symbols** — 384-dimensional embeddings for semantic search (Phase 3)
+- **vec_symbols** — 384-dimensional L2-normalized float32 embeddings as BLOBs; KNN search performed in Go via dot-product
 
 Key design decisions:
 - WAL mode for concurrent read performance
@@ -109,7 +116,7 @@ Key design decisions:
 
 ## Indexing Pipeline
 
-The indexer runs a five-phase pipeline via `errgroup` bounded worker pools:
+The indexer runs a six-phase pipeline via `errgroup` bounded worker pools:
 
 ```
 1. Walk      →  Discover source files (respects .gitignore, skips >1MB)
@@ -118,6 +125,7 @@ The indexer runs a five-phase pipeline via `errgroup` bounded worker pools:
 4. Extract   →  Run .scm queries to capture symbols + dependencies
 5. Store     →  Batch insert into SQLite (single-writer, transactions)
 6. Resolve   →  BFS dependency resolution against symbol name index
+7. Embed     →  Generate ONNX embeddings + upsert into vec_symbols (skipped if no model configured)
 ```
 
 ### Language-Agnostic Design
@@ -154,8 +162,8 @@ The resolver matches extracted call/extends/implements references against the sy
 
 | Metric | Target | Current |
 |--------|--------|---------|
-| Token reduction vs. blind file read | >80% | Not yet measured |
+| Token reduction vs. blind file read | >80% | Not yet measured (Phase 5) |
 | Indexing throughput | >1,000 files/sec | ~23 files/sec (34 files/1.5s, includes dep resolution) |
-| Semantic search latency (P95) | <200ms | Phase 3 |
-| Cold start to first tool call | <3 seconds | ~1s (MCP handshake) |
-| Binary size (incl. ONNX model) | <50 MB | ~31 MB (no ONNX yet) |
+| Semantic search latency (P95) | <200ms | Go-side KNN; not yet benchmarked at scale |
+| Cold start to first tool call | <3 seconds | ~1s (MCP handshake, lazy ONNX init on first query) |
+| Binary size (incl. ONNX model) | <50 MB | ~31 MB (ONNX model is a runtime dependency, not embedded) |
