@@ -4,6 +4,7 @@
 *.so
 *.dylib
 /context-link
+/bin
 
 # Database
 *.db
@@ -35,3 +36,6 @@ coverage.html
 
 # ONNX model (will be fetched during build)
 *.onnx
+
+#MCP Settings
+.mcp.json

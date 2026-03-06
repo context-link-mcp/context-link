@@ -1,0 +1,90 @@
+[
+  {
+    "name": "DefaultTimeout",
+    "qualified_name": "DefaultTimeout",
+    "kind": "variable",
+    "language": "go",
+    "start_line": 9,
+    "end_line": 9
+  },
+  {
+    "name": "ErrNotFound",
+    "qualified_name": "ErrNotFound",
+    "kind": "variable",
+    "language": "go",
+    "start_line": 12,
+    "end_line": 12
+  },
+  {
+    "name": "CacheEntry",
+    "qualified_name": "CacheEntry",
+    "kind": "type",
+    "language": "go",
+    "start_line": 15,
+    "end_line": 18
+  },
+  {
+    "name": "Searcher",
+    "qualified_name": "Searcher",
+    "kind": "interface",
+    "language": "go",
+    "start_line": 21,
+    "end_line": 24
+  },
+  {
+    "name": "Handler",
+    "qualified_name": "Handler",
+    "kind": "type",
+    "language": "go",
+    "start_line": 27,
+    "end_line": 27
+  },
+  {
+    "name": "Cache",
+    "qualified_name": "Cache",
+    "kind": "type",
+    "language": "go",
+    "start_line": 30,
+    "end_line": 33
+  },
+  {
+    "name": "NewCache",
+    "qualified_name": "NewCache",
+    "kind": "function",
+    "language": "go",
+    "start_line": 36,
+    "end_line": 40
+  },
+  {
+    "name": "Get",
+    "qualified_name": "Get",
+    "kind": "method",
+    "language": "go",
+    "start_line": 43,
+    "end_line": 48
+  },
+  {
+    "name": "Set",
+    "qualified_name": "Set",
+    "kind": "method",
+    "language": "go",
+    "start_line": 51,
+    "end_line": 55
+  },
+  {
+    "name": "Delete",
+    "qualified_name": "Delete",
+    "kind": "method",
+    "language": "go",
+    "start_line": 58,
+    "end_line": 62
+  },
+  {
+    "name": "PrintAll",
+    "qualified_name": "PrintAll",
+    "kind": "function",
+    "language": "go",
+    "start_line": 65,
+    "end_line": 71
+  }
+]

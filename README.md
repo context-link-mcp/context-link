@@ -2,17 +2,15 @@
 
 **Local MCP Context Gateway for AI Coding Agents**
 
-context-link is a local MCP server that serves structured code context to AI agents, dramatically reducing token consumption compared to reading entire files. It indexes codebases using a language-agnostic adapter system, builds a symbol graph, and provides semantic search via fully-local embeddings.
+context-link is a local MCP server that serves structured code context to AI agents, dramatically reducing token consumption compared to reading entire files. It indexes codebases using a language-agnostic Tree-sitter adapter system, builds a symbol + dependency graph, and exposes tools over the Model Context Protocol.
 
-**Supported languages:** TypeScript, TSX, Go — with more addable via the `LanguageAdapter` interface.
+**Supported languages:** TypeScript (`.ts`), TSX/JSX (`.tsx`, `.jsx`), Go (`.go`) — extensible via the `LanguageAdapter` interface.
 
 ## The Problem
 
 AI coding agents read entire files to understand context. This brute-force approach is expensive, slow, and prone to context-window overflow. context-link acts as a structural intermediary that extracts and serves only the relevant code symbols, dependencies, and historical notes an agent needs.
 
 ## How It Works: The Context Funnel
-
-context-link implements a three-stage pipeline that progressively narrows the information delivered to the LLM:
 
 ```
   Natural Language Query
@@ -39,90 +37,106 @@ context-link implements a three-stage pipeline that progressively narrows the in
   Minimal, precise context → LLM
 ```
 
-## Target Metrics
+## Current Status
 
-| Metric | Target |
-|--------|--------|
-| Token reduction vs. blind file read | >80% fewer tokens |
-| Indexing throughput | >1,000 files/sec |
-| Semantic search latency (P95) | <200ms per query |
-| Cold start to first tool call | <3 seconds |
-| Binary size (incl. ONNX model) | <50 MB |
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Gateway Foundation (CLI, SQLite, MCP server) | Complete |
+| Phase 2 | Structural Indexer (Tree-sitter, symbol graph, deps) | Complete |
+| Phase 3 | Semantic Search (ONNX embeddings, sqlite-vec) | Planned |
+| Phase 4 | Memory Persistence (notes, stale detection) | Planned |
+| Phase 5 | Integration & Optimization | Planned |
 
 ## MCP Tools
 
-| Tool | Description | Funnel Stage |
-|------|-------------|--------------|
-| `ping` | Health-check for connectivity validation | Setup |
-| `read_architecture_rules` | Returns parsed ARCHITECTURE.md sections | Setup |
-| `semantic_search_symbols` | Natural-language symbol discovery (no code returned) | Scout |
-| `get_code_by_symbol` | Extracts exact code, dependencies, and imports for a symbol | Surgeon |
-| `save_symbol_memory` | Attaches persistent notes to symbols | Historian |
-| `get_symbol_memories` | Retrieves notes for a symbol or file | Historian |
-| `purge_stale_memories` | Cleans up stale or orphaned memory notes | Historian |
+| Tool | Description | Status |
+|------|-------------|--------|
+| `ping` | Health-check for connectivity validation | Implemented |
+| `read_architecture_rules` | Returns parsed ARCHITECTURE.md sections | Implemented |
+| `get_code_by_symbol` | Extracts exact code + transitive dependencies (BFS, depth 0-3) | Implemented |
+| `semantic_search_symbols` | Natural-language symbol discovery | Phase 3 |
+| `save_symbol_memory` | Attaches persistent notes to symbols | Phase 4 |
+| `get_symbol_memories` | Retrieves notes for a symbol or file | Phase 4 |
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
 | Runtime | Go 1.22+ |
-| Protocol | MCP via stdio |
-| AST Parser | go-tree-sitter (language-agnostic via `LanguageAdapter` registry) |
-| Database | SQLite 3 (WAL mode, pure-Go driver) |
-| Vector Engine | sqlite-vec |
-| Embeddings | all-MiniLM-L6-v2 via ONNX Runtime (fully local, no API calls) |
+| Protocol | MCP via stdio (`mcp-go` v0.44.1) |
+| AST Parser | `go-tree-sitter` (language-agnostic via `LanguageAdapter` registry) |
+| Database | SQLite 3 (WAL mode, pure-Go driver via `modernc.org/sqlite`) |
+| Vector Engine | sqlite-vec (Phase 3) |
+| Embeddings | all-MiniLM-L6-v2 via ONNX Runtime (Phase 3) |
 
 ## Quickstart
+
+### Prerequisites
+
+- Go 1.22+
+- A C compiler (gcc) — required for Tree-sitter CGo bindings
+  - **Windows:** `winget install -e --id niXman.mingw-w64-ucrt`
+  - **macOS:** `xcode-select --install`
+  - **Linux:** `apt install build-essential` (or equivalent)
+
+See [BUILDING.md](BUILDING.md) for detailed platform-specific instructions.
 
 ### Build
 
 ```bash
-go build -o context-link ./cmd/antigravity-link
+CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 ```
 
-Or use the Makefile:
+### Index a Project
 
 ```bash
-make build
+./bin/context-link index --project-root /path/to/project --repo-name myproject
 ```
+
+Supports incremental re-indexing — only changed files are re-processed.
 
 ### Run the MCP Server
 
 ```bash
-./context-link serve --project-root /path/to/your/project
+./bin/context-link serve --project-root /path/to/project
 ```
 
 The server communicates over stdio using the MCP protocol.
 
-### Index a Project (Phase 2+)
+### IDE Integration (Claude Code / VS Code)
 
-```bash
-./context-link index /path/to/your/project
-```
-
-### CLI Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--db-path` | `.context-link.db` | Path to SQLite database |
-| `--project-root` | Current directory | Root directory of the project to index |
-| `--log-level` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
-| `--config` | `.context-link.yaml` | Path to config file |
-
-### IDE Configuration
-
-Add to your IDE's MCP server settings:
+Add a `.mcp.json` file to your project root:
 
 ```json
 {
   "mcpServers": {
     "context-link": {
-      "command": "/path/to/context-link",
-      "args": ["serve", "--project-root", "/path/to/your/project"]
+      "command": "/absolute/path/to/context-link",
+      "args": ["serve", "--project-root", "/absolute/path/to/project"]
     }
   }
 }
 ```
+
+Then reload the VS Code window. The MCP tools will be available in Claude Code automatically.
+
+### CLI Flags
+
+**Global flags** (all subcommands):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db-path` | `.context-link.db` | Path to SQLite database |
+| `--project-root` | Current directory | Root directory of the project |
+| `--log-level` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `--config` | `.context-link.yaml` | Path to config file |
+
+**`index` subcommand flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--repo-name` | Directory name | Repository name for multi-repo namespacing |
+| `--workers` | `4` | Number of parallel worker goroutines |
 
 ## Configuration
 
@@ -140,45 +154,20 @@ Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_
 
 ```
 context-link/
-  cmd/
-    antigravity-link/      # CLI entry point
+  cmd/context-link/           # CLI entry point (cobra)
   internal/
-    server/                 # MCP server, JSON-RPC handler
-    indexer/                # Tree-sitter AST parsing, file walker, language adapters
-      adapters/             # LanguageAdapter implementations (TS, TSX, Go, ...)
-    store/                  # SQLite schema, migrations, CRUD
-    vectorstore/            # sqlite-vec integration, embeddings
-    memory/                 # Memory CRUD, stale detection
-    tools/                  # MCP tool definitions & handlers
-    config/                 # Configuration loading
-  pkg/
-    models/                 # Shared types (Symbol, Memory, etc.)
-  scripts/                  # Build, test, benchmark scripts
-  testdata/                 # Sample repos for integration tests
-```
-
-## Development
-
-### Prerequisites
-
-- Go 1.22+
-
-### Run Tests
-
-```bash
-make test
-```
-
-### Lint
-
-```bash
-make lint
-```
-
-### Test Coverage
-
-```bash
-make coverage
+    server/                   # MCP server, JSON-RPC handler (mcp-go)
+    indexer/                  # Indexing pipeline orchestrator
+      adapters/               # LanguageAdapter implementations (TS, TSX, Go)
+        queries/              # .scm Tree-sitter Scheme query files
+    store/                    # SQLite schema, migrations, CRUD
+      migrations/             # Versioned SQL migration files
+    tools/                    # MCP tool definitions & handlers
+    config/                   # Configuration loading (viper)
+  pkg/models/                 # Shared types (Symbol, Memory, File, Dependency)
+  testdata/
+    langs/{ts,tsx,go}/        # Language-specific test fixtures
+    golden/                   # Snapshot test golden JSON files
 ```
 
 ## Adding a New Language
@@ -186,8 +175,8 @@ make coverage
 context-link uses a `LanguageAdapter` interface backed by Tree-sitter. To add support for a new language:
 
 1. **Import the grammar** — add the Tree-sitter C-binding (e.g., `smacker/go-tree-sitter/python`)
-2. **Write query files** — create `.scm` Scheme queries for symbol extraction (`@symbol.name`, `@symbol.body`, `@symbol.function`, `@symbol.class`) and dependency extraction (`@dependency.import`, `@dependency.call`)
-3. **Implement the adapter** — create a file in `internal/indexer/adapters/` that satisfies the `LanguageAdapter` interface:
+2. **Write query files** — create `.scm` queries in `internal/indexer/adapters/queries/` for symbol extraction (`@symbol.name`, `@symbol.body`, `@symbol.function`, `@symbol.class`) and dependency extraction (`@dependency.import`, `@dependency.call`)
+3. **Implement the adapter** — create a file in `internal/indexer/adapters/` satisfying:
 
 ```go
 type LanguageAdapter interface {
@@ -199,10 +188,30 @@ type LanguageAdapter interface {
 }
 ```
 
-4. **Register it** — call `registry.Register(adapter)` at startup
-5. **Add fixtures** — create `testdata/langs/<lang>/` with sample files and golden JSON snapshots
+4. **Register it** — call `registry.Register(adapter)` in `buildLanguageRegistry()` in `cmd/context-link/main.go`
+5. **Add fixtures** — create `testdata/langs/<lang>/` with sample files and run snapshot tests with `-update-golden`
 
-The file walker, parser, extractor, and embedding pipeline all work automatically for any registered adapter — no core code changes needed.
+The walker, parser, extractor, and store pipeline all work automatically for any registered adapter.
+
+## Development
+
+### Run Tests
+
+```bash
+CGO_ENABLED=1 go test ./... -count=1
+```
+
+### Update Snapshot Golden Files
+
+```bash
+CGO_ENABLED=1 go test ./internal/indexer/ -args -update-golden
+```
+
+### Lint
+
+```bash
+golangci-lint run
+```
 
 ## Security
 

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -47,13 +49,18 @@ func New(cfg *config.Config, db *store.DB) *Server {
 	return s
 }
 
-// registerTools wires up all Phase 1 MCP tool handlers.
+// registerTools wires up all MCP tool handlers.
 func (s *Server) registerTools() {
 	tools.RegisterPingTool(s.mcp)
 	slog.Debug("registered tool", "name", "ping")
 
 	tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot)
 	slog.Debug("registered tool", "name", "read_architecture_rules")
+
+	// Phase 2: Structural extraction tool.
+	repoName := filepath.Base(s.cfg.ProjectRoot)
+	tools.RegisterGetCodeTool(s.mcp, s.db, repoName)
+	slog.Debug("registered tool", "name", "get_code_by_symbol")
 }
 
 // registerPrompts registers the explore_codebase prompt that instructs the
@@ -99,7 +106,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	stdioServer := server.NewStdioServer(s.mcp)
 
-	if err := stdioServer.Listen(ctx, nil, nil); err != nil {
+	if err := stdioServer.Listen(ctx, os.Stdin, os.Stdout); err != nil {
 		return fmt.Errorf("server: stdio transport error: %w", err)
 	}
 

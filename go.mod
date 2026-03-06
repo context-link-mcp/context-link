@@ -4,9 +4,11 @@ go 1.24.2
 
 require (
 	github.com/mark3labs/mcp-go v0.44.1
+	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/sync v0.19.0
 	modernc.org/sqlite v1.46.1
 )
 
