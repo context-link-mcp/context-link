@@ -73,6 +73,28 @@ func getCodeBySymbolHandler(db *store.DB, repoName string) server.ToolHandlerFun
 			})
 		}
 
+		// Fetch associated memories (non-fatal if unavailable).
+		memories, _ := store.GetMemoriesBySymbolID(ctx, db, sym.ID)
+		type memResult struct {
+			ID          int64  `json:"id"`
+			Note        string `json:"note"`
+			Author      string `json:"author"`
+			IsStale     bool   `json:"is_stale"`
+			StaleReason string `json:"stale_reason,omitempty"`
+			CreatedAt   string `json:"created_at"`
+		}
+		memResults := make([]memResult, len(memories))
+		for i, m := range memories {
+			memResults[i] = memResult{
+				ID:          m.ID,
+				Note:        m.Note,
+				Author:      m.Author,
+				IsStale:     m.IsStale,
+				StaleReason: m.StaleReason,
+				CreatedAt:   m.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			}
+		}
+
 		timingMs := time.Since(start).Milliseconds()
 
 		result := map[string]any{
@@ -87,8 +109,10 @@ func getCodeBySymbolHandler(db *store.DB, repoName string) server.ToolHandlerFun
 				"language":       sym.Language,
 				"content_hash":   sym.ContentHash,
 			},
-			"dependencies":    depResults,
+			"dependencies":     depResults,
 			"dependency_count": len(depResults),
+			"memories":         memResults,
+			"memory_count":     len(memResults),
 			"metadata": models.ToolMetadata{
 				TimingMs: timingMs,
 			},

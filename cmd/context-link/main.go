@@ -62,6 +62,7 @@ var serveCmd = &cobra.Command{
 var (
 	flagRepoName string
 	flagWorkers  int
+	flagForce    bool
 )
 
 var indexCmd = &cobra.Command{
@@ -93,6 +94,7 @@ func init() {
 	// Index-specific flags.
 	indexCmd.Flags().StringVar(&flagRepoName, "repo-name", "", "repository name for multi-repo namespacing (default: directory name)")
 	indexCmd.Flags().IntVar(&flagWorkers, "workers", 4, "number of parallel worker goroutines for indexing")
+	indexCmd.Flags().BoolVar(&flagForce, "force", false, "force full re-index, bypassing incremental hash check")
 
 	// Phase 3: semantic search flags (shared by serve and index).
 	for _, cmd := range []*cobra.Command{serveCmd, indexCmd} {
@@ -175,7 +177,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	registry := buildLanguageRegistry()
 
 	// Run the indexer.
-	idx := indexer.NewIndexer(registry, db, flagWorkers, embedder)
+	idx := indexer.NewIndexer(registry, db, flagWorkers, embedder).WithForce(flagForce)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -189,10 +191,13 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  Files discovered: %d\n", stats.FilesDiscovered)
 	fmt.Fprintf(os.Stderr, "  Files indexed:    %d\n", stats.FilesIndexed)
 	fmt.Fprintf(os.Stderr, "  Files unchanged:  %d\n", stats.FilesUnchanged)
+	fmt.Fprintf(os.Stderr, "  Files deleted:    %d\n", stats.FilesDeleted)
 	fmt.Fprintf(os.Stderr, "  Files skipped:    %d\n", stats.FilesSkipped)
 	fmt.Fprintf(os.Stderr, "  Symbols extracted:    %d\n", stats.SymbolsExtracted)
 	fmt.Fprintf(os.Stderr, "  Dependencies:         %d\n", stats.DepsResolved)
 	fmt.Fprintf(os.Stderr, "  Embeddings generated: %d\n", stats.EmbeddingsGenerated)
+	fmt.Fprintf(os.Stderr, "  Memories orphaned:    %d\n", stats.MemoriesOrphaned)
+	fmt.Fprintf(os.Stderr, "  Memories relinked:    %d\n", stats.MemoriesRelinked)
 	fmt.Fprintf(os.Stderr, "  Errors:               %d\n", stats.Errors)
 	fmt.Fprintf(os.Stderr, "  Duration:             %s\n", stats.Duration)
 

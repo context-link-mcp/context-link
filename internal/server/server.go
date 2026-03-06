@@ -69,6 +69,10 @@ func (s *Server) registerTools() {
 	// Phase 3: Semantic search tool (embedder may be nil if model not configured).
 	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName)
 	slog.Debug("registered tool", "name", "semantic_search_symbols")
+
+	// Phase 4: Memory persistence tools.
+	tools.RegisterMemoryTools(s.mcp, s.db, repoName)
+	slog.Debug("registered tools", "names", "save_symbol_memory,get_symbol_memories,purge_stale_memories")
 }
 
 // registerPrompts registers the explore_codebase prompt that instructs the

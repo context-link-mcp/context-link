@@ -18,16 +18,19 @@ import (
 
 // IndexStats reports the results of an indexing run.
 type IndexStats struct {
-	FilesDiscovered    int           `json:"files_discovered"`
-	FilesIndexed       int           `json:"files_indexed"`
-	FilesSkipped       int           `json:"files_skipped"`
-	FilesUnchanged     int           `json:"files_unchanged"`
-	SymbolsExtracted   int           `json:"symbols_extracted"`
-	DepsExtracted      int           `json:"deps_extracted"`
-	DepsResolved       int           `json:"deps_resolved"`
-	EmbeddingsGenerated int          `json:"embeddings_generated"`
-	Duration           time.Duration `json:"duration"`
-	Errors             int           `json:"errors"`
+	FilesDiscovered     int           `json:"files_discovered"`
+	FilesIndexed        int           `json:"files_indexed"`
+	FilesSkipped        int           `json:"files_skipped"`
+	FilesUnchanged      int           `json:"files_unchanged"`
+	FilesDeleted        int           `json:"files_deleted"`
+	SymbolsExtracted    int           `json:"symbols_extracted"`
+	DepsExtracted       int           `json:"deps_extracted"`
+	DepsResolved        int           `json:"deps_resolved"`
+	EmbeddingsGenerated int           `json:"embeddings_generated"`
+	MemoriesOrphaned    int           `json:"memories_orphaned"`
+	MemoriesRelinked    int           `json:"memories_relinked"`
+	Duration            time.Duration `json:"duration"`
+	Errors              int           `json:"errors"`
 }
 
 // Indexer orchestrates the full indexing pipeline: walk → parse → extract → store → embed.
@@ -38,6 +41,7 @@ type Indexer struct {
 	db        *store.DB
 	embedder  vectorstore.Embedder // nil = skip embedding generation
 	workers   int
+	force     bool // when true, bypass incremental hash check
 	repoRoot  string
 }
 
@@ -55,6 +59,12 @@ func NewIndexer(registry *LanguageRegistry, db *store.DB, workers int, embedder 
 		embedder:  embedder,
 		workers:   workers,
 	}
+}
+
+// WithForce returns the indexer configured to bypass incremental hashing (full re-index).
+func (idx *Indexer) WithForce(force bool) *Indexer {
+	idx.force = force
+	return idx
 }
 
 // fileExtension returns the file extension including the dot.
@@ -85,12 +95,14 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	stats.FilesDiscovered = len(result.Files)
 	slog.Info("indexer: walk complete", "files_discovered", stats.FilesDiscovered)
 
-	// Phase 2: Determine which files need re-indexing.
-	filesToIndex, unchanged, err := idx.filterChangedFiles(ctx, result.Files, repoName)
+	// Phase 2: Determine which files need re-indexing and remove deleted files.
+	filesToIndex, unchanged, deleted, orphaned, err := idx.filterChangedFiles(ctx, result.Files, repoName)
 	if err != nil {
 		return nil, fmt.Errorf("indexer: failed to filter changed files: %w", err)
 	}
 	stats.FilesUnchanged = unchanged
+	stats.FilesDeleted = deleted
+	stats.MemoriesOrphaned += orphaned
 	slog.Info("indexer: incremental check complete",
 		"to_index", len(filesToIndex),
 		"unchanged", unchanged,
@@ -168,30 +180,58 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		stats.EmbeddingsGenerated = idx.generateEmbeddings(ctx, repoName, indexedPaths)
 	}
 
-	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged
+	// Phase 7: Orphan recovery — re-link orphaned memories to newly inserted symbols.
+	indexedPathsForRelink := make([]string, 0, len(results))
+	for _, r := range results {
+		indexedPathsForRelink = append(indexedPathsForRelink, r.file.RelPath)
+	}
+	relinked := idx.relinkOrphanedMemories(ctx, repoName, indexedPathsForRelink)
+	stats.MemoriesRelinked = relinked
+
+	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged - stats.FilesDeleted
+	if stats.FilesSkipped < 0 {
+		stats.FilesSkipped = 0
+	}
 	stats.Duration = time.Since(start)
 
 	slog.Info("indexer: indexing complete",
 		"repo", repoName,
 		"files_indexed", stats.FilesIndexed,
+		"files_deleted", stats.FilesDeleted,
 		"symbols", stats.SymbolsExtracted,
 		"deps_resolved", stats.DepsResolved,
+		"memories_orphaned", stats.MemoriesOrphaned,
+		"memories_relinked", stats.MemoriesRelinked,
 		"duration", stats.Duration,
 	)
 
 	return stats, nil
 }
 
-// filterChangedFiles compares discovered files against the DB to find
-// which files are new or changed.
+// filterChangedFiles compares discovered files against the DB to find which files
+// are new, changed, or deleted. Deleted files have their symbols removed (memories
+// become orphaned via ON DELETE SET NULL). Returns changed files, unchanged count,
+// deleted count, and orphaned memory count.
 func (idx *Indexer) filterChangedFiles(
 	ctx context.Context,
 	files []DiscoveredFile,
 	repoName string,
-) (changed []DiscoveredFile, unchanged int, err error) {
+) (changed []DiscoveredFile, unchanged int, deleted int, orphaned int, err error) {
+	// Build a set of discovered paths for O(1) lookup.
+	discovered := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		dbFile, err := store.GetFileByPath(ctx, idx.db, repoName, f.RelPath)
-		if err != nil {
+		discovered[f.RelPath] = struct{}{}
+	}
+
+	for _, f := range files {
+		if idx.force {
+			// Force mode: treat every file as changed.
+			changed = append(changed, f)
+			continue
+		}
+
+		dbFile, dbErr := store.GetFileByPath(ctx, idx.db, repoName, f.RelPath)
+		if dbErr != nil {
 			// File not in DB — new file.
 			changed = append(changed, f)
 			continue
@@ -202,10 +242,60 @@ func (idx *Indexer) filterChangedFiles(
 			continue
 		}
 
-		// Hash changed — needs re-indexing.
+		// Hash changed — snapshot memories as stale before re-indexing.
+		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, f.RelPath, "hash_changed")
 		changed = append(changed, f)
 	}
-	return changed, unchanged, nil
+
+	// Detect files in DB that no longer exist on disk.
+	dbFiles, listErr := store.ListFiles(ctx, idx.db, repoName)
+	if listErr != nil {
+		return changed, unchanged, deleted, orphaned, fmt.Errorf("indexer: failed to list DB files: %w", listErr)
+	}
+	for _, dbFile := range dbFiles {
+		if _, found := discovered[dbFile.Path]; found {
+			continue
+		}
+		// File removed from disk — orphan its memories, then delete symbols + file record.
+		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, dbFile.Path, "symbol_deleted")
+		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbFile.Path); delErr != nil {
+			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbFile.Path, "error", delErr)
+		}
+		if delErr := store.DeleteFileByPath(ctx, idx.db, repoName, dbFile.Path); delErr != nil {
+			slog.Warn("indexer: failed to delete file record", "file", dbFile.Path, "error", delErr)
+		}
+		deleted++
+		slog.Info("indexer: removed deleted file", "file", dbFile.Path)
+	}
+
+	return changed, unchanged, deleted, orphaned, nil
+}
+
+// snapshotMemoriesForFile snapshots and marks stale all non-stale memories for
+// symbols in the given file. Returns the exact count of memories newly staled.
+func (idx *Indexer) snapshotMemoriesForFile(ctx context.Context, repoName, filePath, reason string) int {
+	syms, err := store.GetSymbolsByFile(ctx, idx.db, repoName, filePath)
+	if err != nil {
+		slog.Warn("indexer: failed to get symbols for memory snapshot", "file", filePath, "error", err)
+		return 0
+	}
+	total := 0
+	for _, s := range syms {
+		n, err := store.SnapshotAndMarkStale(ctx, idx.db, s.ID, s.QualifiedName, s.FilePath, reason)
+		if err != nil {
+			slog.Warn("indexer: failed to snapshot memories", "symbol", s.QualifiedName, "error", err)
+			continue
+		}
+		// Explicitly null out symbol_id so memories are orphaned regardless of
+		// whether the FK ON DELETE SET NULL cascade fires in the SQLite driver.
+		if n > 0 {
+			if err := store.DetachMemoriesFromSymbol(ctx, idx.db, s.ID); err != nil {
+				slog.Warn("indexer: failed to detach memories from symbol", "symbol", s.QualifiedName, "error", err)
+			}
+		}
+		total += n
+	}
+	return total
 }
 
 // processFile parses a single file and extracts symbols and dependencies.
@@ -364,6 +454,33 @@ func (idx *Indexer) getAllSymbolsWithDeps(ctx context.Context, repoName string, 
 	}
 
 	return allDeps, nil
+}
+
+// relinkOrphanedMemories scans newly indexed symbols and re-links any orphaned
+// memories that have matching last_known_symbol + last_known_file.
+func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string, filePaths []string) int {
+	relinked := 0
+	for _, path := range filePaths {
+		syms, err := store.GetSymbolsByFile(ctx, idx.db, repoName, path)
+		if err != nil {
+			continue
+		}
+		for _, s := range syms {
+			orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, idx.db, s.QualifiedName, s.FilePath)
+			if err != nil || len(orphans) == 0 {
+				continue
+			}
+			for _, m := range orphans {
+				if err := store.RelinkMemory(ctx, idx.db, m.ID, s.ID); err != nil {
+					slog.Warn("indexer: failed to relink memory", "memory_id", m.ID, "symbol", s.QualifiedName, "error", err)
+					continue
+				}
+				relinked++
+				slog.Debug("indexer: relinked orphaned memory", "memory_id", m.ID, "symbol", s.QualifiedName)
+			}
+		}
+	}
+	return relinked
 }
 
 // generateEmbeddings generates and stores vector embeddings for all symbols

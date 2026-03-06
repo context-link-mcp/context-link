@@ -44,7 +44,7 @@ AI coding agents read entire files to understand context. This brute-force appro
 | Phase 1 | Gateway Foundation (CLI, SQLite, MCP server) | ✅ Complete |
 | Phase 2 | Structural Indexer (Tree-sitter, symbol graph, deps) | ✅ Complete |
 | Phase 3 | Semantic Search (ONNX embeddings, KNN vector search) | ✅ Complete |
-| Phase 4 | Memory Persistence (notes, stale detection) | Planned |
+| Phase 4 | Memory Persistence (notes, stale detection) | ✅ Complete |
 | Phase 5 | Integration & Optimization | Planned |
 
 ## MCP Tools
@@ -55,8 +55,9 @@ AI coding agents read entire files to understand context. This brute-force appro
 | `read_architecture_rules` | Returns parsed ARCHITECTURE.md sections | ✅ Implemented |
 | `get_code_by_symbol` | Extracts exact code + transitive dependencies (BFS, depth 0-3) | ✅ Implemented |
 | `semantic_search_symbols` | Natural-language symbol discovery via local ONNX embeddings | ✅ Implemented |
-| `save_symbol_memory` | Attaches persistent notes to symbols | Phase 4 |
-| `get_symbol_memories` | Retrieves notes for a symbol or file | Phase 4 |
+| `save_symbol_memory` | Attaches persistent notes to symbols (max 2000 chars, dedup) | ✅ Implemented |
+| `get_symbol_memories` | Retrieves notes for a symbol or file (pagination, stale flag) | ✅ Implemented |
+| `purge_stale_memories` | Deletes stale or orphaned memories from the repository | ✅ Implemented |
 
 ## Tech Stack
 
@@ -157,6 +158,7 @@ Then reload the VS Code window. The MCP tools will be available in Claude Code a
 |------|---------|-------------|
 | `--repo-name` | Directory name | Repository name for multi-repo namespacing |
 | `--workers` | `4` | Number of parallel worker goroutines |
+| `--force` | `false` | Force full re-index, bypassing incremental hash check |
 | `--model-path` | _(disabled)_ | Path to `all-MiniLM-L6-v2.onnx` — enables embedding generation |
 | `--vocab-path` | _(disabled)_ | Path to `vocab.txt` for the ONNX tokenizer |
 | `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library (optional if on system PATH) |

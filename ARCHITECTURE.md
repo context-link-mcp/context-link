@@ -20,11 +20,11 @@ Given a symbol name, Tree-sitter parses the AST to extract the **exact function 
 
 **Key tool:** `get_code_by_symbol`
 
-### Stage 3 — The Historian (Persistence) [Phase 4]
+### Stage 3 — The Historian (Persistence) [Implemented — Phase 4]
 
-Injects developer-written or agent-written memory notes linked to specific AST nodes. Memories are automatically flagged stale when the underlying code hash changes during re-indexing. This enables persistent cross-session knowledge accumulation.
+Injects developer-written or agent-written memory notes linked to specific AST nodes. Memories are automatically flagged stale when the underlying code hash changes during re-indexing, and orphaned memories (symbol deleted) are recovered automatically when a matching symbol reappears. This enables persistent cross-session knowledge accumulation.
 
-**Key tools:** `save_symbol_memory`, `get_symbol_memories`
+**Key tools:** `save_symbol_memory`, `get_symbol_memories`, `purge_stale_memories`
 
 ## Component Map
 
@@ -67,8 +67,9 @@ internal/
   tools/
     ping.go                     # Health-check tool (status, version, uptime, runtime info)
     architecture.go             # read_architecture_rules tool (parses ARCHITECTURE.md → JSON sections)
-    get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps, depth 0-3)
-    semantic_search.go          # semantic_search_symbols tool (embed query → KNN → join + filter symbols)
+    get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps + memories, depth 0-3)
+    semantic_search.go          # semantic_search_symbols tool (embed query → KNN → join + filter + memory_count)
+    memory.go                   # save_symbol_memory, get_symbol_memories, purge_stale_memories tools
   config/
     config.go                   # Viper-based config loading (.context-link.yaml, env vars, model paths)
 pkg/models/
@@ -95,7 +96,10 @@ get_code_by_symbol ──> SQLite BFS dependency graph ──> [code + deps]
 Agent Task Completion
     |
     v
-save_symbol_memory ──> memories table ──> persisted across sessions  (Phase 4)
+save_symbol_memory ──> memories table ──> persisted across sessions
+    |
+    v
+re-index event ──> SnapshotAndMarkStale ──> orphan recovery (RelinkMemory)
 ```
 
 ## Database Schema
@@ -105,7 +109,7 @@ The unified SQLite database (`.context-link.db`) contains:
 - **files** — File registry with content hashes for incremental indexing
 - **symbols** — Every parsed code symbol with source location, code block, and content hash
 - **dependencies** — Directed call/extends/implements graph between symbols
-- **memories** — Agent/developer notes linked to symbols (Phase 4, schema exists)
+- **memories** — Agent/developer notes linked to symbols; stale-flagged on hash change, orphaned on deletion, recovered on re-index
 - **vec_symbols** — 384-dimensional L2-normalized float32 embeddings as BLOBs; KNN search performed in Go via dot-product
 
 Key design decisions:
@@ -120,12 +124,14 @@ The indexer runs a six-phase pipeline via `errgroup` bounded worker pools:
 
 ```
 1. Walk      →  Discover source files (respects .gitignore, skips >1MB)
-2. Filter    →  Compare SHA-256 hashes against files table (incremental)
+2. Filter    →  Compare SHA-256 hashes against files table (incremental); detect + remove deleted files;
+                snapshot memories as stale before overwriting changed symbols; --force bypasses hash check
 3. Parse     →  Tree-sitter AST parsing via adapter-specific grammar pools
 4. Extract   →  Run .scm queries to capture symbols + dependencies
 5. Store     →  Batch insert into SQLite (single-writer, transactions)
 6. Resolve   →  BFS dependency resolution against symbol name index
 7. Embed     →  Generate ONNX embeddings + upsert into vec_symbols (skipped if no model configured)
+8. Recover   →  Orphan recovery: re-link orphaned memories to newly indexed symbols by (qualified_name, file_path)
 ```
 
 ### Language-Agnostic Design

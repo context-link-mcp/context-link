@@ -21,6 +21,7 @@ type SemanticSearchResult struct {
 	FilePath      string  `json:"file_path"`
 	Language      string  `json:"language"`
 	Similarity    float32 `json:"similarity_score"`
+	MemoryCount   int     `json:"memory_count"`
 }
 
 // semanticSearchResponse is the full JSON response from semantic_search_symbols.
@@ -111,19 +112,27 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 
 		// --- Join with symbols table and apply optional filters ---
 		var results []SemanticSearchResult
+		// Collect symbol IDs for batch memory count lookup.
+		type candidate struct {
+			symbolID int64
+			result   SemanticSearchResult
+		}
+		var candidates []candidate
+
 		for _, hit := range hits {
-			if len(results) >= topK {
+			if len(candidates) >= topK {
 				break
 			}
 
 			row := db.QueryRowContext(ctx, `
-				SELECT name, qualified_name, kind, file_path, language
+				SELECT id, name, qualified_name, kind, file_path, language
 				FROM symbols
 				WHERE id = ? AND repo_name = ?
 			`, hit.SymbolID, repoName)
 
+			var symID int64
 			var name, qualName, kind, filePath, language string
-			if err := row.Scan(&name, &qualName, &kind, &filePath, &language); err != nil {
+			if err := row.Scan(&symID, &name, &qualName, &kind, &filePath, &language); err != nil {
 				continue // symbol may have been deleted since embedding was stored
 			}
 
@@ -134,14 +143,30 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 				continue
 			}
 
-			results = append(results, SemanticSearchResult{
-				SymbolName:    name,
-				QualifiedName: qualName,
-				Kind:          kind,
-				FilePath:      filePath,
-				Language:      language,
-				Similarity:    hit.Similarity,
+			candidates = append(candidates, candidate{
+				symbolID: symID,
+				result: SemanticSearchResult{
+					SymbolName:    name,
+					QualifiedName: qualName,
+					Kind:          kind,
+					FilePath:      filePath,
+					Language:      language,
+					Similarity:    hit.Similarity,
+				},
 			})
+		}
+
+		// Batch fetch memory counts.
+		symbolIDs := make([]int64, len(candidates))
+		for i, c := range candidates {
+			symbolIDs[i] = c.symbolID
+		}
+		memoryCounts, _ := store.CountMemoriesBySymbolIDs(ctx, db, symbolIDs)
+
+		for _, c := range candidates {
+			r := c.result
+			r.MemoryCount = memoryCounts[c.symbolID]
+			results = append(results, r)
 		}
 
 		resp := semanticSearchResponse{
