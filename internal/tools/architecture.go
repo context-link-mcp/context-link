@@ -16,7 +16,8 @@ import (
 
 // RegisterArchitectureTool registers the read_architecture_rules tool with the
 // MCP server. projectRoot is the directory where ARCHITECTURE.md is expected.
-func RegisterArchitectureTool(s *server.MCPServer, projectRoot string) {
+// timeout is applied to each tool call.
+func RegisterArchitectureTool(s *server.MCPServer, projectRoot string, timeout time.Duration) {
 	tool := mcp.NewTool("read_architecture_rules",
 		mcp.WithDescription(
 			"Reads the ARCHITECTURE.md file from the project root and returns its "+
@@ -25,7 +26,7 @@ func RegisterArchitectureTool(s *server.MCPServer, projectRoot string) {
 		),
 	)
 
-	s.AddTool(tool, readArchitectureRulesHandler(projectRoot))
+	s.AddTool(tool, WithTimeout(timeout, readArchitectureRulesHandler(projectRoot)))
 }
 
 // readArchitectureRulesHandler returns the MCP tool handler function.

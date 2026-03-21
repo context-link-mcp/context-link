@@ -11,7 +11,7 @@ context-link is a local MCP server (Go) that serves structured code context to A
 | File | Purpose |
 |------|---------|
 | `ARCHITECTURE.md` | System design, component map, data flow, design principles |
-| `BUILDING.md` | CGo dependencies, platform-specific build instructions |
+| `README.md` (Building section) | CGo dependencies, platform-specific build instructions |
 | `.claude/plans/task.md` | Phase-by-phase task checklist with validation notes |
 | `.claude/plans/Context.md` | Full implementation plan (problem, architecture, metrics) |
 | `.claude/rules/coding-standards.md` | Non-negotiable coding conventions |
@@ -90,15 +90,20 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 ## Architecture Quick Reference
 
 ```
-cmd/context-link/main.go          Entry point, CLI (cobra), adapter registration
+cmd/context-link/main.go          Entry point, CLI (cobra), adapter registration, embedder wiring
 internal/server/server.go         MCP server setup, tool registration
-internal/indexer/indexer.go        Pipeline orchestrator: walk → parse → extract → store → resolve
+internal/indexer/indexer.go        Pipeline orchestrator: walk → parse → extract → store → resolve → embed
 internal/indexer/language.go       LanguageAdapter interface + registry
 internal/indexer/extractor.go      Tree-sitter query-based symbol/dep extraction
 internal/indexer/adapters/         TS, TSX, Go adapters + .scm query files
 internal/store/symbols.go          Symbol CRUD + BFS transitive dependency resolution
 internal/store/dependencies.go     Dependency edge CRUD
+internal/vectorstore/model2vec.go  Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config)
+internal/vectorstore/onnx.go       Optional ONNX embedder (all-MiniLM-L6-v2, 384-dim)
+internal/vectorstore/vecstore.go   Embedding CRUD, KNN search, dimension validation
 internal/tools/get_code.go         get_code_by_symbol MCP tool handler
+internal/tools/semantic_search.go  semantic_search_symbols MCP tool handler
+internal/tools/memory.go           save/get/purge memory MCP tool handlers
 internal/tools/ping.go             Health-check tool
 internal/tools/architecture.go     read_architecture_rules tool
 ```
@@ -115,6 +120,6 @@ internal/tools/architecture.go     read_architecture_rules tool
 
 - **Phase 1 (Foundation):** Complete — CLI, SQLite, MCP server, ping, architecture tool
 - **Phase 2 (Indexer):** Complete — Tree-sitter parsing, symbol graph, BFS deps, get_code_by_symbol, 3 language adapters, 65 tests passing
-- **Phase 3 (Semantic Search):** Complete — ONNX embedder, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
-- **Phase 4 (Memory):** Planned — save/get memories, stale detection, orphan recovery
-- **Phase 5 (Polish):** Planned — performance optimization, integration testing, documentation
+- **Phase 3 (Semantic Search):** Complete — Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config), optional ONNX override, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
+- **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
+- **Phase 5 (Polish):** In progress — docs, tests, timeout wiring done; runtime testing pending

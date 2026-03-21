@@ -38,7 +38,7 @@ type semanticSearchMeta struct {
 
 // RegisterSemanticSearchTool registers the semantic_search_symbols MCP tool.
 // If embedder is nil, the tool returns an appropriate "not available" error.
-func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string) {
+func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string, timeout time.Duration) {
 	tool := mcp.NewTool("semantic_search_symbols",
 		mcp.WithDescription(
 			"Discover relevant code symbols by natural-language intent. "+
@@ -63,7 +63,7 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 			mcp.Description("Minimum cosine similarity threshold (0.0–1.0, default: 0.3). Higher values return fewer but more relevant results."),
 		),
 	)
-	s.AddTool(tool, semanticSearchHandler(db, embedder, repoName))
+	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName)))
 }
 
 // semanticSearchHandler returns the ToolHandlerFunc for semantic_search_symbols.

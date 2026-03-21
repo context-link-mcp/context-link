@@ -3,12 +3,18 @@ package vectorstore
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/context-link/context-link/internal/store"
 )
+
+// ErrDimensionMismatch is returned when stored embeddings have a different
+// dimension than the current embedder. The user must re-index with --force.
+var ErrDimensionMismatch = errors.New("vectorstore: embedding dimension mismatch")
 
 // SearchResult is a symbol returned by KNNSearch with its similarity score.
 type SearchResult struct {
@@ -105,6 +111,46 @@ func KNNSearch(
 		}
 	}
 	return results, nil
+}
+
+// EnsureEmbeddingDimension checks that the stored embedding dimension matches
+// the expected dimension. If no dimension is recorded yet, it sets it.
+// Returns ErrDimensionMismatch if there is a mismatch (user must re-index).
+func EnsureEmbeddingDimension(ctx context.Context, db *store.DB, expectedDim int) error {
+	// Read current stored dimension.
+	var value string
+	err := db.QueryRowContext(ctx,
+		`SELECT value FROM vec_meta WHERE key = 'embedding_dim'`,
+	).Scan(&value)
+
+	if err != nil {
+		// Table might not exist yet (pre-migration) or no row — set it.
+		return SetEmbeddingDimension(ctx, db, expectedDim)
+	}
+
+	storedDim, convErr := strconv.Atoi(value)
+	if convErr != nil {
+		// Corrupt value — overwrite.
+		return SetEmbeddingDimension(ctx, db, expectedDim)
+	}
+
+	if storedDim != expectedDim {
+		return fmt.Errorf("%w: stored=%d, expected=%d — re-index with --force",
+			ErrDimensionMismatch, storedDim, expectedDim)
+	}
+	return nil
+}
+
+// SetEmbeddingDimension records the embedding dimension in vec_meta.
+func SetEmbeddingDimension(ctx context.Context, db *store.DB, dim int) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO vec_meta (key, value) VALUES ('embedding_dim', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, strconv.Itoa(dim))
+	if err != nil {
+		return fmt.Errorf("vectorstore: set embedding dimension: %w", err)
+	}
+	return nil
 }
 
 // encodeFloat32s encodes a float32 slice as little-endian IEEE 754 bytes.

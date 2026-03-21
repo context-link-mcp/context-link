@@ -12,6 +12,17 @@ import (
 	"github.com/context-link/context-link/pkg/models"
 )
 
+// safeNodeContent extracts node content with bounds checking to prevent
+// panics from stale tree-sitter node offsets.
+func safeNodeContent(node *sitter.Node, source []byte) (string, bool) {
+	start := node.StartByte()
+	end := node.EndByte()
+	if int(end) > len(source) || start > end {
+		return "", false
+	}
+	return node.Content(source), true
+}
+
 // captureKindMap maps Tree-sitter capture names to symbol kinds.
 var captureKindMap = map[string]string{
 	"symbol.function":  "function",
@@ -112,9 +123,13 @@ func (e *Extractor) processSymbolMatch(
 
 		switch captureName {
 		case "symbol.name":
-			name = capture.Node.Content(source)
+			if c, ok := safeNodeContent(capture.Node, source); ok {
+				name = c
+			}
 		case "symbol.body":
-			body = capture.Node.Content(source)
+			if c, ok := safeNodeContent(capture.Node, source); ok {
+				body = c
+			}
 		default:
 			// Check if this is a kind capture (symbol.function, symbol.class, etc.)
 			if k, ok := captureKindMap[captureName]; ok {
@@ -225,7 +240,12 @@ func (e *Extractor) processDependencyMatch(
 
 	for _, capture := range match.Captures {
 		captureName := query.CaptureNameForId(capture.Index)
-		content := capture.Node.Content(source)
+		content, ok := safeNodeContent(capture.Node, source)
+		if !ok {
+			slog.Debug("indexer: skipping capture with out-of-bounds node",
+				"file", filePath, "capture", captureName)
+			continue
+		}
 
 		switch captureName {
 		case "dependency.source":

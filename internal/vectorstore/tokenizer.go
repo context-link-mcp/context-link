@@ -29,6 +29,10 @@ type TokenizerOutput struct {
 type BERTTokenizer struct {
 	vocab    map[string]int64
 	maxChars int
+	padID    int64
+	unkID    int64
+	clsID    int64
+	sepID    int64
 }
 
 // NewBERTTokenizerFromFile loads vocabulary from a vocab.txt file.
@@ -51,12 +55,38 @@ func NewBERTTokenizerFromFile(path string) (*BERTTokenizer, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("vectorstore: failed to read vocab file: %w", err)
 	}
-	return &BERTTokenizer{vocab: vocab, maxChars: 100}, nil
+	return newBERTTokenizer(vocab, 100), nil
 }
 
 // NewBERTTokenizerFromMap creates a tokenizer with a pre-built vocab (for testing).
 func NewBERTTokenizerFromMap(vocab map[string]int64) *BERTTokenizer {
-	return &BERTTokenizer{vocab: vocab, maxChars: 100}
+	return newBERTTokenizer(vocab, 100)
+}
+
+// newBERTTokenizer creates a BERTTokenizer with special token IDs read from
+// the vocab map. Falls back to standard BERT constants if tokens are missing.
+func newBERTTokenizer(vocab map[string]int64, maxChars int) *BERTTokenizer {
+	t := &BERTTokenizer{
+		vocab:    vocab,
+		maxChars: maxChars,
+		padID:    TokenIDPad,
+		unkID:    TokenIDUnk,
+		clsID:    TokenIDCLS,
+		sepID:    TokenIDSEP,
+	}
+	if id, ok := vocab["[PAD]"]; ok {
+		t.padID = id
+	}
+	if id, ok := vocab["[UNK]"]; ok {
+		t.unkID = id
+	}
+	if id, ok := vocab["[CLS]"]; ok {
+		t.clsID = id
+	}
+	if id, ok := vocab["[SEP]"]; ok {
+		t.sepID = id
+	}
+	return t
 }
 
 // Tokenize tokenizes text and returns padded/truncated tensors of length maxLen.
@@ -68,7 +98,7 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 	maxTokens := maxLen - 2
 
 	tokenIDs := make([]int64, 0, maxLen)
-	tokenIDs = append(tokenIDs, TokenIDCLS)
+	tokenIDs = append(tokenIDs, t.clsID)
 
 	for _, word := range words {
 		subwords := t.wordpieceTokenize(word)
@@ -78,7 +108,7 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 			}
 			id, ok := t.vocab[sw]
 			if !ok {
-				tokenIDs = append(tokenIDs, TokenIDUnk)
+				tokenIDs = append(tokenIDs, t.unkID)
 			} else {
 				tokenIDs = append(tokenIDs, id)
 			}
@@ -87,7 +117,7 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 			break
 		}
 	}
-	tokenIDs = append(tokenIDs, TokenIDSEP)
+	tokenIDs = append(tokenIDs, t.sepID)
 
 	// Build attention mask: 1 for real tokens, 0 for padding.
 	seqLen := len(tokenIDs)

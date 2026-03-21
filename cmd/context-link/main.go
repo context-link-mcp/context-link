@@ -160,17 +160,27 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		cfg.ORTLibPath = flagORTLibPath
 	}
 
-	// Create embedder if configured; otherwise skip embedding generation.
+	// Create embedder: use ONNX if explicitly configured, otherwise built-in Model2Vec.
 	var embedder vectorstore.Embedder
 	if cfg.ModelPath != "" && cfg.VocabPath != "" {
 		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
 		if err != nil {
-			slog.Warn("embedding generation disabled: failed to create ONNX embedder", "error", err)
+			slog.Warn("ONNX embedder failed, falling back to built-in Model2Vec", "error", err)
+			embedder = vectorstore.NewModel2VecEmbedder()
 		} else {
 			embedder = e
 			defer e.Close() //nolint:errcheck
-			slog.Info("embedding generation enabled", "model", cfg.ModelPath)
+			slog.Info("embedding generation enabled (ONNX)", "model", cfg.ModelPath)
 		}
+	} else {
+		embedder = vectorstore.NewModel2VecEmbedder()
+		slog.Info("embedding generation enabled (built-in Model2Vec)")
+	}
+
+	// Validate embedding dimension matches stored data.
+	if err := vectorstore.EnsureEmbeddingDimension(context.Background(), db, embedder.Dim()); err != nil {
+		slog.Warn("embedding dimension mismatch — re-index with --force to use new embedder",
+			"error", err)
 	}
 
 	// Build language registry with default adapters.
@@ -270,19 +280,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.ORTLibPath = flagORTLibPath
 	}
 
-	// Create embedder if model paths are configured; otherwise semantic search
-	// will gracefully return a "not available" error from the tool handler.
+	// Create embedder: use ONNX if explicitly configured, otherwise built-in Model2Vec.
 	var embedder vectorstore.Embedder
 	if cfg.ModelPath != "" && cfg.VocabPath != "" {
 		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
 		if err != nil {
-			slog.Warn("semantic search disabled: failed to create ONNX embedder", "error", err)
+			slog.Warn("ONNX embedder failed, falling back to built-in Model2Vec", "error", err)
+			embedder = vectorstore.NewModel2VecEmbedder()
 		} else {
 			embedder = e
-			slog.Info("semantic search enabled", "model", cfg.ModelPath)
+			slog.Info("semantic search enabled (ONNX)", "model", cfg.ModelPath)
 		}
 	} else {
-		slog.Info("semantic search disabled: --model-path and --vocab-path not set")
+		embedder = vectorstore.NewModel2VecEmbedder()
+		slog.Info("semantic search enabled (built-in Model2Vec)")
+	}
+
+	// Validate embedding dimension matches stored data.
+	if err := vectorstore.EnsureEmbeddingDimension(context.Background(), db, embedder.Dim()); err != nil {
+		slog.Warn("embedding dimension mismatch — re-index with --force to use new embedder",
+			"error", err)
 	}
 
 	// Build MCP server with all tools registered.

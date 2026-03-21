@@ -12,7 +12,8 @@ import (
 )
 
 // RegisterGetCodeTool registers the get_code_by_symbol tool with the MCP server.
-func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string) {
+// timeout is applied to each tool call.
+func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
 	tool := mcp.NewTool("get_code_by_symbol",
 		mcp.WithDescription(
 			"Extracts the exact source code of a named symbol (function, class, interface, type) "+
@@ -28,7 +29,7 @@ func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string) {
 		),
 	)
 
-	s.AddTool(tool, getCodeBySymbolHandler(db, repoName))
+	s.AddTool(tool, WithTimeout(timeout, getCodeBySymbolHandler(db, repoName)))
 }
 
 // getCodeBySymbolHandler returns the MCP tool handler for get_code_by_symbol.

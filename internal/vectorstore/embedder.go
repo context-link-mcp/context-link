@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	// ModelDim is the output dimension of all-MiniLM-L6-v2.
-	ModelDim = 384
+	// ONNXModelDim is the output dimension of all-MiniLM-L6-v2 (ONNX backend).
+	ONNXModelDim = 384
+	// ModelDim is the default embedding dimension (Model2Vec built-in backend).
+	ModelDim = Model2VecDim
 	// MaxSeqLen is the maximum token sequence length fed to the model.
 	MaxSeqLen = 128
 	// DefaultBatchSize is the number of texts to embed per ONNX inference call.
@@ -47,7 +49,7 @@ type MockEmbedder struct {
 }
 
 // NewMockEmbedder creates a MockEmbedder with the given vector dimension.
-// Pass 0 to use ModelDim (384).
+// Pass 0 to use ModelDim (128).
 func NewMockEmbedder(dim int) *MockEmbedder {
 	if dim <= 0 {
 		dim = ModelDim

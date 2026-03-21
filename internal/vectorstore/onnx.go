@@ -77,7 +77,7 @@ func NewONNXEmbedder(modelPath, vocabPath, libPath string) (*ONNXEmbedder, error
 }
 
 // Dim implements Embedder.
-func (e *ONNXEmbedder) Dim() int { return ModelDim }
+func (e *ONNXEmbedder) Dim() int { return ONNXModelDim }
 
 // Close implements Embedder — destroys the ORT session and tensors.
 func (e *ONNXEmbedder) Close() error {
@@ -169,8 +169,8 @@ func (e *ONNXEmbedder) initialize() error {
 		return fmt.Errorf("vectorstore: create token_type_ids tensor: %w", err)
 	}
 
-	// Pre-allocate output tensor: [1, MaxSeqLen, ModelDim].
-	outShape := ort.NewShape(1, int64(MaxSeqLen), int64(ModelDim))
+	// Pre-allocate output tensor: [1, MaxSeqLen, ONNXModelDim].
+	outShape := ort.NewShape(1, int64(MaxSeqLen), int64(ONNXModelDim))
 	e.outTensor, err = ort.NewEmptyTensor[float32](outShape)
 	if err != nil {
 		return fmt.Errorf("vectorstore: create output tensor: %w", err)
@@ -208,16 +208,16 @@ func (e *ONNXEmbedder) inferOne(text string) ([]float32, error) {
 	}
 
 	// Mean pool over non-padding token positions.
-	hidden := e.outTensor.GetData() // []float32, shape [1, MaxSeqLen, ModelDim]
-	embedding := make([]float32, ModelDim)
+	hidden := e.outTensor.GetData() // []float32, shape [1, MaxSeqLen, ONNXModelDim]
+	embedding := make([]float32, ONNXModelDim)
 	var count float32
 
 	for s := 0; s < MaxSeqLen; s++ {
 		if e.attMasks[s] == 0 {
 			continue
 		}
-		offset := s * ModelDim
-		for d := 0; d < ModelDim; d++ {
+		offset := s * ONNXModelDim
+		for d := 0; d < ONNXModelDim; d++ {
 			embedding[d] += hidden[offset+d]
 		}
 		count++

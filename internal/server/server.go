@@ -54,24 +54,28 @@ func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder) *Serve
 }
 
 // registerTools wires up all MCP tool handlers.
+// Every handler is wrapped with a 30-second timeout so a slow tool call
+// cannot block the server indefinitely.
 func (s *Server) registerTools() {
+	repoName := filepath.Base(s.cfg.ProjectRoot)
+	timeout := tools.DefaultToolTimeout
+
 	tools.RegisterPingTool(s.mcp)
 	slog.Debug("registered tool", "name", "ping")
 
-	tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot)
+	tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot, timeout)
 	slog.Debug("registered tool", "name", "read_architecture_rules")
 
 	// Phase 2: Structural extraction tool.
-	repoName := filepath.Base(s.cfg.ProjectRoot)
-	tools.RegisterGetCodeTool(s.mcp, s.db, repoName)
+	tools.RegisterGetCodeTool(s.mcp, s.db, repoName, timeout)
 	slog.Debug("registered tool", "name", "get_code_by_symbol")
 
 	// Phase 3: Semantic search tool (embedder may be nil if model not configured).
-	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName)
+	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout)
 	slog.Debug("registered tool", "name", "semantic_search_symbols")
 
 	// Phase 4: Memory persistence tools.
-	tools.RegisterMemoryTools(s.mcp, s.db, repoName)
+	tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout)
 	slog.Debug("registered tools", "names", "save_symbol_memory,get_symbol_memories,purge_stale_memories")
 }
 

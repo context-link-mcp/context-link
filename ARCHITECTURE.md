@@ -10,7 +10,7 @@ The system implements a three-stage pipeline that progressively narrows the info
 
 ### Stage 1 — Semantic Scout (Discovery) [Implemented — Phase 3]
 
-Accepts natural-language queries from the AI agent. Uses local vector embeddings (`all-MiniLM-L6-v2` via OnnxRuntime) stored as BLOBs in the `vec_symbols` table. Go-side KNN search (dot-product over L2-normalized float32 vectors) returns matching symbol names **without reading file contents**, dramatically narrowing the search space.
+Accepts natural-language queries from the AI agent. Uses local vector embeddings stored as BLOBs in the `vec_symbols` table. The default embedder is `potion-base-4M` (Model2Vec, 128-dim, embedded in the binary — zero-config). An optional ONNX override (`all-MiniLM-L6-v2`, 384-dim) is available via `--model-path`. Go-side KNN search (dot-product over L2-normalized float32 vectors) returns matching symbol names **without reading file contents**, dramatically narrowing the search space.
 
 **Key tool:** `semantic_search_symbols`
 
@@ -59,11 +59,16 @@ internal/
     migrations/
       001_initial.sql           # Schema: files, symbols, dependencies, memories, indexes
       002_vec_symbols.sql       # Schema: vec_symbols (float32 BLOB embeddings for KNN search)
+      003_vec_dimension_meta.sql # Schema: vec_meta (embedding dimension tracking)
   vectorstore/                  # Phase 3: embedding generation + vector search
     embedder.go                 # Embedder interface, MockEmbedder, SymbolEmbedText helper
-    tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding)
-    onnx.go                     # ONNXEmbedder (lazy ORT session, pre-alloc tensors, mean-pool + L2-norm)
-    vecstore.go                 # UpsertEmbedding, KNNSearch (Go-side dot-product), encode/decode BLOBs
+    tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding, dynamic special IDs)
+    hf_tokenizer.go             # HuggingFace tokenizer.json parser (WordPiece subset)
+    model2vec.go                # Model2VecEmbedder (built-in, zero-config, 128-dim potion-base-4M)
+    model2vec_data.go           # //go:embed directives for model2vec/ model files
+    safetensors.go              # Pure Go safetensors parser (F32/F16 tensor extraction)
+    onnx.go                     # ONNXEmbedder (optional, lazy ORT session, 384-dim all-MiniLM-L6-v2)
+    vecstore.go                 # UpsertEmbedding, KNNSearch (Go-side dot-product), dimension validation
   tools/
     ping.go                     # Health-check tool (status, version, uptime, runtime info)
     architecture.go             # read_architecture_rules tool (parses ARCHITECTURE.md → JSON sections)
@@ -87,7 +92,7 @@ testdata/
 Agent Query
     |
     v
-semantic_search_symbols ──> embed query (ONNX) ──> Go KNN over vec_symbols ──> [symbol names]
+semantic_search_symbols ──> embed query (Model2Vec/ONNX) ──> Go KNN over vec_symbols ──> [symbol names]
     |
     v
 get_code_by_symbol ──> SQLite BFS dependency graph ──> [code + deps]
@@ -110,7 +115,8 @@ The unified SQLite database (`.context-link.db`) contains:
 - **symbols** — Every parsed code symbol with source location, code block, and content hash
 - **dependencies** — Directed call/extends/implements graph between symbols
 - **memories** — Agent/developer notes linked to symbols; stale-flagged on hash change, orphaned on deletion, recovered on re-index
-- **vec_symbols** — 384-dimensional L2-normalized float32 embeddings as BLOBs; KNN search performed in Go via dot-product
+- **vec_symbols** — L2-normalized float32 embeddings as BLOBs (128-dim Model2Vec default, 384-dim ONNX optional); KNN search performed in Go via dot-product
+- **vec_meta** — Key-value metadata (tracks embedding dimension for mismatch detection on embedder switch)
 
 Key design decisions:
 - WAL mode for concurrent read performance
@@ -130,7 +136,7 @@ The indexer runs a six-phase pipeline via `errgroup` bounded worker pools:
 4. Extract   →  Run .scm queries to capture symbols + dependencies
 5. Store     →  Batch insert into SQLite (single-writer, transactions)
 6. Resolve   →  BFS dependency resolution against symbol name index
-7. Embed     →  Generate ONNX embeddings + upsert into vec_symbols (skipped if no model configured)
+7. Embed     →  Generate embeddings (built-in Model2Vec or ONNX) + upsert into vec_symbols
 8. Recover   →  Orphan recovery: re-link orphaned memories to newly indexed symbols by (qualified_name, file_path)
 ```
 
@@ -168,8 +174,8 @@ The resolver matches extracted call/extends/implements references against the sy
 
 | Metric | Target | Current |
 |--------|--------|---------|
-| Token reduction vs. blind file read | >80% | Not yet measured (Phase 5) |
-| Indexing throughput | >1,000 files/sec | ~23 files/sec (34 files/1.5s, includes dep resolution) |
-| Semantic search latency (P95) | <200ms | Go-side KNN; not yet benchmarked at scale |
-| Cold start to first tool call | <3 seconds | ~1s (MCP handshake, lazy ONNX init on first query) |
-| Binary size (incl. ONNX model) | <50 MB | ~31 MB (ONNX model is a runtime dependency, not embedded) |
+| Token reduction vs. blind file read | >80% | ~78% avg (95.9% best, depth=1) |
+| Indexing throughput | >1,000 files/sec | ~12 files/sec (59 files/5.1s, includes dep resolution + embedding) |
+| Semantic search latency (P95) | <200ms | 23ms P95, 21ms P50 (530 symbols, Model2Vec) |
+| Cold start to first tool call | <3 seconds | 44ms (MCP init + ping) |
+| Binary size (incl. embedded model) | <50 MB | ~47 MB (Model2Vec potion-base-4M embedded in binary) |

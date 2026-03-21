@@ -14,14 +14,14 @@ import (
 
 // RegisterMemoryTools registers save_symbol_memory, get_symbol_memories, and
 // purge_stale_memories with the MCP server.
-func RegisterMemoryTools(s *server.MCPServer, db *store.DB, repoName string) {
-	registerSaveMemory(s, db, repoName)
-	registerGetMemories(s, db, repoName)
-	registerPurgeMemories(s, db, repoName)
+func RegisterMemoryTools(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
+	registerSaveMemory(s, db, repoName, timeout)
+	registerGetMemories(s, db, repoName, timeout)
+	registerPurgeMemories(s, db, repoName, timeout)
 }
 
 // registerSaveMemory registers the save_symbol_memory tool.
-func registerSaveMemory(s *server.MCPServer, db *store.DB, repoName string) {
+func registerSaveMemory(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
 	tool := mcp.NewTool("save_symbol_memory",
 		mcp.WithDescription(
 			"Attaches a persistent note to a named code symbol. The note survives "+
@@ -40,11 +40,11 @@ func registerSaveMemory(s *server.MCPServer, db *store.DB, repoName string) {
 			mcp.Description("Who is saving this note: 'agent' (default) or 'developer'."),
 		),
 	)
-	s.AddTool(tool, saveMemoryHandler(db, repoName))
+	s.AddTool(tool, WithTimeout(timeout, saveMemoryHandler(db, repoName)))
 }
 
 // registerGetMemories registers the get_symbol_memories tool.
-func registerGetMemories(s *server.MCPServer, db *store.DB, repoName string) {
+func registerGetMemories(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
 	tool := mcp.NewTool("get_symbol_memories",
 		mcp.WithDescription(
 			"Retrieves persistent notes attached to a symbol or all symbols in a file. "+
@@ -64,11 +64,11 @@ func registerGetMemories(s *server.MCPServer, db *store.DB, repoName string) {
 			mcp.Description("Maximum results to return (default 20, max 100)."),
 		),
 	)
-	s.AddTool(tool, getMemoriesHandler(db, repoName))
+	s.AddTool(tool, WithTimeout(timeout, getMemoriesHandler(db, repoName)))
 }
 
 // registerPurgeMemories registers the purge_stale_memories tool.
-func registerPurgeMemories(s *server.MCPServer, db *store.DB, repoName string) {
+func registerPurgeMemories(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
 	tool := mcp.NewTool("purge_stale_memories",
 		mcp.WithDescription(
 			"Deletes stale memories for the repository. By default deletes all stale memories. "+
@@ -78,7 +78,7 @@ func registerPurgeMemories(s *server.MCPServer, db *store.DB, repoName string) {
 			mcp.Description("If true, only delete memories with no linked symbol (symbol deleted). Default false."),
 		),
 	)
-	s.AddTool(tool, purgeMemoriesHandler(db, repoName))
+	s.AddTool(tool, WithTimeout(timeout, purgeMemoriesHandler(db, repoName)))
 }
 
 // saveMemoryHandler returns the handler for save_symbol_memory.
