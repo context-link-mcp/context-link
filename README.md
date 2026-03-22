@@ -37,6 +37,24 @@ AI coding agents read entire files to understand context. This brute-force appro
   Minimal, precise context → LLM
 ```
 
+## Installation
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install context-link-mcp/tap/context-link
+```
+
+### Download Binary
+
+Pre-built binaries for Linux, macOS, and Windows (amd64) are available on the [GitHub Releases](https://github.com/context-link-mcp/context-link/releases) page.
+
+### Build from Source
+
+See the [Building](#building) section below.
+
+---
+
 ## Tech Stack
 
 | Component | Technology |
