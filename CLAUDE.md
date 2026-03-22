@@ -25,7 +25,7 @@ context-link is a local MCP server (Go) that serves structured code context to A
 make build
 
 # Or manual build with version injection
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.2.0" -o ./bin/context-link.exe ./cmd/context-link
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.3.0" -o ./bin/context-link.exe ./cmd/context-link
 
 # Run all tests
 CGO_ENABLED=1 go test ./... -count=1
@@ -98,7 +98,7 @@ internal/server/server.go         MCP server setup, config-driven tool registry
 internal/indexer/indexer.go        Pipeline orchestrator: walk → parse → extract → store → resolve → embed
 internal/indexer/language.go       LanguageAdapter interface + registry
 internal/indexer/extractor.go      Tree-sitter query-based symbol/dep extraction
-internal/indexer/adapters/         TS, TSX, Go adapters + .scm query files
+internal/indexer/adapters/         10 language adapters (TS, TSX, Go, Python, JS, Rust, Java, C, C++, C#) + .scm query files
 internal/store/symbols.go          Symbol CRUD + BFS transitive dependency resolution
 internal/store/dependencies.go     Dependency edge CRUD
 internal/vectorstore/model2vec.go  Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config)
@@ -110,8 +110,15 @@ internal/tools/memory.go           save/get/purge memory MCP tool handlers
 internal/tools/skeleton.go         get_file_skeleton tool (structural outline, signatures only)
 internal/tools/usages.go           get_symbol_usages tool (reverse dependency lookup)
 internal/tools/calltree.go         get_call_tree tool (BFS call hierarchy, callees/callers)
+internal/tools/deadcode.go         find_dead_code tool (symbols with zero inbound edges)
+internal/tools/blastradius.go      get_blast_radius tool (BFS callers, file grouping, depth summary)
+internal/tools/routes.go           find_http_routes tool (route discovery + call-site matching)
+internal/tools/tokens.go           Token savings estimation, SessionTokenTracker
 internal/tools/ping.go             Health-check tool
 internal/tools/architecture.go     read_architecture_rules tool
+internal/tools/timeout.go          WithTimeout middleware for tool handlers
+internal/store/routes.go           Route CRUD, filtering, path normalization, confidence matching
+internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index)
 ```
 
 ## Adding a New Language
@@ -129,3 +136,4 @@ internal/tools/architecture.go     read_architecture_rules tool
 - **Phase 3 (Semantic Search):** Complete — Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config), optional ONNX override, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
+- **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes)

@@ -41,7 +41,7 @@ func TestGetCodeBySymbolHandler_Found(t *testing.T) {
 	db := openToolTestDB(t)
 	insertSymbol(t, db, "repo", "validateToken", "function", "function validateToken() {}")
 
-	handler := getCodeBySymbolHandler(db, "repo")
+	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"symbol_name": "validateToken"}
 
@@ -54,7 +54,7 @@ func TestGetCodeBySymbolHandler_NotFound(t *testing.T) {
 	t.Parallel()
 	db := openToolTestDB(t)
 
-	handler := getCodeBySymbolHandler(db, "repo")
+	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"symbol_name": "nonExistentSymbol"}
 
@@ -67,7 +67,7 @@ func TestGetCodeBySymbolHandler_MissingParam(t *testing.T) {
 	t.Parallel()
 	db := openToolTestDB(t)
 
-	handler := getCodeBySymbolHandler(db, "repo")
+	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
 	result, err := callHandler(t, handler) // empty request
 	require.NoError(t, err)
 	assert.True(t, result.IsError, "missing symbol_name should return error")
@@ -78,7 +78,7 @@ func TestGetCodeBySymbolHandler_DepthClamped(t *testing.T) {
 	db := openToolTestDB(t)
 	insertSymbol(t, db, "repo", "myFunc", "function", "func myFunc() {}")
 
-	handler := getCodeBySymbolHandler(db, "repo")
+	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"symbol_name": "myFunc",

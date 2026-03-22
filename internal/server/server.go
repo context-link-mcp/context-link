@@ -66,15 +66,21 @@ func (s *Server) registerTools() {
 	repoName := filepath.Base(s.cfg.ProjectRoot)
 	timeout := tools.DefaultToolTimeout
 	vecCache := vectorstore.NewVectorCache(repoName)
+	tracker := tools.NewSessionTokenTracker()
 
 	registry := []toolRegistration{
 		{"ping", func() { tools.RegisterPingTool(s.mcp, s.version) }},
-		{"read_architecture_rules", func() { tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot, timeout) }},
-		{"get_code_by_symbol", func() { tools.RegisterGetCodeTool(s.mcp, s.db, repoName, timeout) }},
-		{"semantic_search_symbols", func() { tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout, vecCache) }},
-		{"get_file_skeleton", func() { tools.RegisterSkeletonTool(s.mcp, s.db, repoName, timeout) }},
-		{"get_symbol_usages", func() { tools.RegisterUsagesTool(s.mcp, s.db, repoName, timeout) }},
-		{"get_call_tree", func() { tools.RegisterCallTreeTool(s.mcp, s.db, repoName, timeout) }},
+		{"read_architecture_rules", func() { tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot, timeout, tracker) }},
+		{"get_code_by_symbol", func() { tools.RegisterGetCodeTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"semantic_search_symbols", func() {
+			tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout, tracker, vecCache)
+		}},
+		{"get_file_skeleton", func() { tools.RegisterSkeletonTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"get_symbol_usages", func() { tools.RegisterUsagesTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"get_call_tree", func() { tools.RegisterCallTreeTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"find_dead_code", func() { tools.RegisterDeadCodeTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"get_blast_radius", func() { tools.RegisterBlastRadiusTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"find_http_routes", func() { tools.RegisterRoutesTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"memory", func() { tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout) }},
 	}
 
@@ -118,6 +124,8 @@ func (s *Server) registerPrompts() {
 		"Use get_code_by_symbol to extract only the needed code and dependencies.",
 		"Use get_symbol_usages to find all callers of a symbol.",
 		"Use get_call_tree to explore call hierarchies (callees or callers).",
+		"Use get_blast_radius to see everything affected by changing a symbol.",
+		"Use find_dead_code to discover unused symbols in the codebase.",
 		"Check returned memories for prior insights about the code.",
 		"ONLY use direct file read as a last resort if the above tools fail.",
 		"After completing a task, use save_symbol_memory to record findings.",

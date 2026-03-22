@@ -4,7 +4,7 @@
 
 context-link is a local MCP server that serves structured code context to AI agents, dramatically reducing token consumption compared to reading entire files. It indexes codebases using a language-agnostic Tree-sitter adapter system, builds a symbol + dependency graph, and exposes tools over the Model Context Protocol.
 
-**Supported languages:** TypeScript (`.ts`), TSX/JSX (`.tsx`, `.jsx`), Go (`.go`) — extensible via the `LanguageAdapter` interface.
+**Supported languages:** TypeScript (`.ts`), TSX/JSX (`.tsx`, `.jsx`), Go (`.go`), Python (`.py`), JavaScript (`.js`, `.mjs`), Rust (`.rs`), Java (`.java`), C (`.c`, `.h`), C++ (`.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx`, `.hh`), C# (`.cs`) — extensible via the `LanguageAdapter` interface.
 
 ## The Problem
 
@@ -113,7 +113,7 @@ sudo dnf install gcc gcc-c++ make
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 
 # Release build (stripped binary, with version)
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.2.0" -o ./bin/context-link ./cmd/context-link
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.3.0" -o ./bin/context-link ./cmd/context-link
 
 # Or use the Makefile (auto-detects version from git tags)
 make build
@@ -218,8 +218,10 @@ For maximum token efficiency:
 3. Use `get_file_skeleton` to understand a file's structure before diving in.
 4. Use `get_code_by_symbol` to retrieve only the code you need, with dependencies.
 5. Use `get_symbol_usages` and `get_call_tree` to explore call hierarchies and reverse dependencies.
-6. Check `memories` in the response for prior findings about the symbol.
-7. After completing work, call `save_symbol_memory` to persist findings for future sessions.
+6. Use `find_dead_code` to discover unused symbols and `get_blast_radius` to assess change impact.
+7. Use `find_http_routes` to discover REST route definitions and match them to call sites.
+8. Check `memories` in the response for prior findings about the symbol.
+9. After completing work, call `save_symbol_memory` to persist findings for future sessions.
 
 The `explore_codebase` MCP prompt encodes this protocol and can be invoked directly in supported clients.
 
@@ -254,6 +256,7 @@ The `explore_codebase` MCP prompt encodes this protocol and can be invoked direc
 | `--model-path` | _(built-in)_ | Path to custom ONNX model — overrides built-in Model2Vec |
 | `--vocab-path` | _(built-in)_ | Path to `vocab.txt` for the ONNX tokenizer |
 | `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library |
+| `--watch` | `false` | Auto re-index on file changes (fsnotify, 500ms debounce) |
 | `--tools` | _(all)_ | Comma-separated list of tools to enable (e.g. `ping,get_code_by_symbol`) |
 
 ### Configuration File
@@ -280,6 +283,9 @@ log_level: info
 #   - get_call_tree
 #   - read_architecture_rules
 #   - memory  # registers save_symbol_memory, get_symbol_memories, purge_stale_memories
+#   - find_dead_code
+#   - get_blast_radius
+#   - find_http_routes
 ```
 
 Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_LINK_LOG_LEVEL=debug`).
@@ -288,7 +294,7 @@ Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_
 
 ## MCP Tool Reference
 
-All tools return structured JSON with a `metadata.timing_ms` field for observability.
+All tools return structured JSON with a `metadata` object including `timing_ms` for observability, plus `tokens_saved_est`, `cost_avoided_est`, `session_tokens_saved`, and `session_cost_avoided` for token savings tracking.
 
 ### `ping`
 
@@ -461,6 +467,79 @@ Traverses the dependency graph to show a call hierarchy. Use `direction='callees
   "edge_count": 5,
   "direction": "callees",
   "metadata": { "timing_ms": 3 }
+}
+```
+
+### `find_dead_code`
+
+Discovers symbols with zero inbound dependency edges (no callers). Entry points (`main`, `init`) and variables are excluded by default.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `file_path` | string | no | _(all)_ | Limit search to a specific file |
+| `kind` | string | no | _(all)_ | Filter: `function`, `class`, `method`, `interface`, `type` |
+| `exclude_exported` | boolean | no | `true` | Exclude exported symbols (uppercase-initial in Go) |
+| `limit` | number | no | `50` | Max results (max `200`) |
+
+```json
+{
+  "dead_symbols": [
+    { "name": "unusedHelper", "qualified_name": "pkg.unusedHelper", "kind": "function",
+      "file_path": "internal/pkg/helper.go", "start_line": 42, "language": "go" }
+  ],
+  "count": 1,
+  "metadata": { "timing_ms": 5, "tokens_saved_est": 1200 }
+}
+```
+
+### `get_blast_radius`
+
+BFS through callers to show everything affected by changing a symbol. Groups results by file and depth.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `symbol_name` | string | yes | — | Name or qualified name of the symbol to analyze |
+| `depth` | number | no | `2` | Max traversal depth (max `5`) |
+
+```json
+{
+  "root": { "name": "hashFile", "kind": "function", "file_path": "internal/indexer/walker.go" },
+  "affected_files": {
+    "internal/indexer/walker.go": [
+      { "name": "Walk", "kind": "method", "depth": 1, "dep_kind": "call" }
+    ]
+  },
+  "total_affected": 3,
+  "files_affected": 2,
+  "by_depth": { "1": 2, "2": 1 },
+  "metadata": { "timing_ms": 8, "tokens_saved_est": 2400 }
+}
+```
+
+### `find_http_routes`
+
+Discovers HTTP route definitions and call sites in the codebase. Supports Express, Gin, FastAPI, Flask, and similar frameworks. Matches route definitions to their call sites with confidence scoring.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `method` | string | no | _(all)_ | Filter by HTTP method (GET, POST, PUT, DELETE, PATCH) |
+| `path` | string | no | _(all)_ | Filter routes by path substring (e.g., `/api/users`) |
+| `file_path` | string | no | _(all)_ | Limit search to a specific file path |
+
+```json
+{
+  "routes": [
+    { "method": "GET", "path_pattern": "/api/users/:id", "handler": "getUser",
+      "file_path": "src/routes/users.ts", "start_line": 15, "framework": "express", "kind": "definition" }
+  ],
+  "route_count": 1,
+  "matches": [
+    { "definition": { "method": "GET", "path_pattern": "/api/users/:id", "file_path": "src/routes/users.ts" },
+      "call_site": { "method": "GET", "path_pattern": "/api/users/123", "file_path": "src/client/api.ts" },
+      "confidence": 0.9 }
+  ],
+  "match_count": 1,
+  "metadata": { "timing_ms": 12 }
 }
 ```
 

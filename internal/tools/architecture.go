@@ -17,7 +17,7 @@ import (
 // RegisterArchitectureTool registers the read_architecture_rules tool with the
 // MCP server. projectRoot is the directory where ARCHITECTURE.md is expected.
 // timeout is applied to each tool call.
-func RegisterArchitectureTool(s *server.MCPServer, projectRoot string, timeout time.Duration) {
+func RegisterArchitectureTool(s *server.MCPServer, projectRoot string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("read_architecture_rules",
 		mcp.WithDescription(
 			"Reads the ARCHITECTURE.md file from the project root and returns its "+
@@ -26,11 +26,11 @@ func RegisterArchitectureTool(s *server.MCPServer, projectRoot string, timeout t
 		),
 	)
 
-	s.AddTool(tool, WithTimeout(timeout, readArchitectureRulesHandler(projectRoot)))
+	s.AddTool(tool, WithTimeout(timeout, readArchitectureRulesHandler(projectRoot, tracker)))
 }
 
 // readArchitectureRulesHandler returns the MCP tool handler function.
-func readArchitectureRulesHandler(projectRoot string) server.ToolHandlerFunc {
+func readArchitectureRulesHandler(projectRoot string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -53,11 +53,21 @@ func readArchitectureRulesHandler(projectRoot string) server.ToolHandlerFunc {
 		sections := parseMarkdownSections(string(data))
 		timingMs := time.Since(start).Milliseconds()
 
+		// Token savings: reading ARCHITECTURE.md via this tool returns structured
+		// sections instead of the raw file, but the file is fully included so
+		// savings come from the structured format being slightly smaller.
+		savings := ComputeSavings(len(data), len(data))
+		sessionTotal := tracker.Record(savings.Saved)
+
 		result := map[string]any{
 			"sections": sections,
 			"metadata": models.ToolMetadata{
-				TimingMs: timingMs,
-				Source:   archPath,
+				TimingMs:           timingMs,
+				Source:             archPath,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

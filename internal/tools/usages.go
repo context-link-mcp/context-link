@@ -14,7 +14,7 @@ import (
 )
 
 // RegisterUsagesTool registers the get_symbol_usages MCP tool.
-func RegisterUsagesTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
+func RegisterUsagesTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("get_symbol_usages",
 		mcp.WithDescription(
 			"Reverse dependency lookup — finds all callers of a symbol. "+
@@ -26,7 +26,7 @@ func RegisterUsagesTool(s *server.MCPServer, db *store.DB, repoName string, time
 			mcp.Description("The name or qualified name of the symbol to find usages for (e.g., 'hashFile' or 'Walker.Walk')."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, symbolUsagesHandler(db, repoName)))
+	s.AddTool(tool, WithTimeout(timeout, symbolUsagesHandler(db, repoName, tracker)))
 }
 
 // usageEntry is one caller in the usages response.
@@ -40,7 +40,7 @@ type usageEntry struct {
 }
 
 // symbolUsagesHandler returns the MCP tool handler for get_symbol_usages.
-func symbolUsagesHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
+func symbolUsagesHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -73,8 +73,9 @@ func symbolUsagesHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(fmt.Sprintf("get_symbol_usages: failed to fetch callers: %v", err)), nil
 		}
 
-		// Build usage list.
+		// Build usage list and collect unique files for token savings.
 		var usages []usageEntry
+		fileSet := map[string]struct{}{sym.FilePath: {}}
 		for _, d := range deps {
 			caller, ok := callerMap[d.CallerID]
 			if !ok {
@@ -88,7 +89,21 @@ func symbolUsagesHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 				StartLine:           caller.StartLine,
 				DepKind:             d.Kind,
 			})
+			fileSet[caller.FilePath] = struct{}{}
 		}
+
+		// Token savings: agent would read all caller files; we return metadata only.
+		var totalFileBytes int
+		for fp := range fileSet {
+			if f, err := store.GetFileByPath(ctx, db, repoName, fp); err == nil {
+				totalFileBytes += int(f.SizeBytes)
+			}
+		}
+		// Response is metadata-only (no code blocks), so response size is small.
+		responseBytes := len(usages) * 80 // approximate per-entry JSON overhead
+		savings := ComputeSavings(totalFileBytes, responseBytes)
+		sessionTotal := tracker.Record(savings.Saved)
+		timingMs := time.Since(start).Milliseconds()
 
 		result := map[string]any{
 			"symbol": map[string]any{
@@ -100,7 +115,11 @@ func symbolUsagesHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 			"usages":      usages,
 			"usage_count": len(usages),
 			"metadata": models.ToolMetadata{
-				TimingMs: time.Since(start).Milliseconds(),
+				TimingMs:           timingMs,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

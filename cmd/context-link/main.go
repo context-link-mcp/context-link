@@ -20,6 +20,7 @@ import (
 	"github.com/context-link-mcp/context-link/internal/server"
 	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/context-link-mcp/context-link/internal/vectorstore"
+	"github.com/context-link-mcp/context-link/internal/watcher"
 )
 
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z".
@@ -39,6 +40,9 @@ var (
 
 	// Tool registry: comma-separated list of tools to enable.
 	flagTools []string
+
+	// File watcher flag.
+	flagWatch bool
 )
 
 func main() {
@@ -109,6 +113,9 @@ func init() {
 
 	// Tool registry flag (serve only).
 	serveCmd.Flags().StringSliceVar(&flagTools, "tools", nil, "comma-separated list of tools to enable (default: all)")
+
+	// File watcher flag (serve only).
+	serveCmd.Flags().BoolVar(&flagWatch, "watch", false, "auto re-index on file changes")
 
 	rootCmd.AddCommand(serveCmd, indexCmd, versionCmd)
 }
@@ -242,6 +249,41 @@ func buildLanguageRegistry() *indexer.LanguageRegistry {
 		slog.Error("failed to register Go adapter", "error", err)
 	}
 
+	// Register Python adapter (.py files).
+	if err := registry.Register(adapters.NewPythonAdapter()); err != nil {
+		slog.Error("failed to register Python adapter", "error", err)
+	}
+
+	// Register JavaScript adapter (.js, .mjs files).
+	if err := registry.Register(adapters.NewJavaScriptAdapter()); err != nil {
+		slog.Error("failed to register JavaScript adapter", "error", err)
+	}
+
+	// Register Rust adapter (.rs files).
+	if err := registry.Register(adapters.NewRustAdapter()); err != nil {
+		slog.Error("failed to register Rust adapter", "error", err)
+	}
+
+	// Register Java adapter (.java files).
+	if err := registry.Register(adapters.NewJavaAdapter()); err != nil {
+		slog.Error("failed to register Java adapter", "error", err)
+	}
+
+	// Register C adapter (.c, .h files).
+	if err := registry.Register(adapters.NewCAdapter()); err != nil {
+		slog.Error("failed to register C adapter", "error", err)
+	}
+
+	// Register C++ adapter (.cpp, .hpp, .cc, .cxx, .hxx, .hh files).
+	if err := registry.Register(adapters.NewCppAdapter()); err != nil {
+		slog.Error("failed to register C++ adapter", "error", err)
+	}
+
+	// Register C# adapter (.cs files).
+	if err := registry.Register(adapters.NewCSharpAdapter()); err != nil {
+		slog.Error("failed to register C# adapter", "error", err)
+	}
+
 	return registry
 }
 
@@ -322,6 +364,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start file watcher if --watch is enabled.
+	if flagWatch {
+		registry := buildLanguageRegistry()
+		repoName := filepath.Base(cfg.ProjectRoot)
+		w := watcher.New(registry, db, embedder, cfg.ProjectRoot, repoName, 4)
+		go func() {
+			if err := w.Watch(ctx); err != nil {
+				slog.Error("file watcher failed", "error", err)
+			}
+		}()
+	}
 
 	return srv.Run(ctx)
 }

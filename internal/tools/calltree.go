@@ -14,7 +14,7 @@ import (
 )
 
 // RegisterCallTreeTool registers the get_call_tree MCP tool.
-func RegisterCallTreeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
+func RegisterCallTreeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("get_call_tree",
 		mcp.WithDescription(
 			"Traverses the dependency graph to show a call hierarchy. "+
@@ -33,7 +33,7 @@ func RegisterCallTreeTool(s *server.MCPServer, db *store.DB, repoName string, ti
 			mcp.Description("Max traversal depth (default: 1, max: 3)."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, callTreeHandler(db, repoName)))
+	s.AddTool(tool, WithTimeout(timeout, callTreeHandler(db, repoName, tracker)))
 }
 
 // callTreeEdgeResult is one edge in the call tree response.
@@ -48,7 +48,7 @@ type callTreeEdgeResult struct {
 }
 
 // callTreeHandler returns the MCP tool handler for get_call_tree.
-func callTreeHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
+func callTreeHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -84,6 +84,7 @@ func callTreeHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 		}
 
 		edgeResults := make([]callTreeEdgeResult, len(edges))
+		fileSet := map[string]struct{}{sym.FilePath: {}}
 		for i, e := range edges {
 			edgeResults[i] = callTreeEdgeResult{
 				Depth:         e.Depth,
@@ -94,7 +95,20 @@ func callTreeHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 				StartLine:     e.Symbol.StartLine,
 				DepKind:       e.DependencyKind,
 			}
+			fileSet[e.Symbol.FilePath] = struct{}{}
 		}
+
+		// Token savings: agent would read all traversed files; we return metadata only.
+		var totalFileBytes int
+		for fp := range fileSet {
+			if f, err := store.GetFileByPath(ctx, db, repoName, fp); err == nil {
+				totalFileBytes += int(f.SizeBytes)
+			}
+		}
+		responseBytes := len(edgeResults) * 80
+		savings := ComputeSavings(totalFileBytes, responseBytes)
+		sessionTotal := tracker.Record(savings.Saved)
+		timingMs := time.Since(start).Milliseconds()
 
 		result := map[string]any{
 			"root": map[string]any{
@@ -107,7 +121,11 @@ func callTreeHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 			"edge_count": len(edgeResults),
 			"direction":  direction,
 			"metadata": models.ToolMetadata{
-				TimingMs: time.Since(start).Milliseconds(),
+				TimingMs:           timingMs,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

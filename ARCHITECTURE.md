@@ -45,21 +45,44 @@ internal/
       typescript.go             # .ts adapter (smacker/go-tree-sitter/typescript)
       tsx.go                    # .tsx/.jsx adapter (smacker/go-tree-sitter/tsx)
       go.go                     # .go adapter (smacker/go-tree-sitter/golang)
+      python.go                 # .py adapter (smacker/go-tree-sitter/python)
+      javascript.go             # .js/.mjs adapter (smacker/go-tree-sitter/javascript)
+      rust.go                   # .rs adapter (smacker/go-tree-sitter/rust)
+      java.go                   # .java adapter (smacker/go-tree-sitter/java)
+      c_lang.go                 # .c/.h adapter (smacker/go-tree-sitter/c)
+      cpp.go                    # .cpp/.hpp/.cc/.cxx/.hxx/.hh adapter (smacker/go-tree-sitter/cpp)
+      csharp.go                 # .cs adapter (smacker/go-tree-sitter/csharp)
       queries/
         ts_symbols.scm          # TS symbol extraction (functions, classes, methods, interfaces, types)
         ts_deps.scm             # TS dependency extraction (imports, calls, extends, implements)
         go_symbols.scm          # Go symbol extraction (funcs, methods, structs, interfaces, types, vars, consts)
         go_deps.scm             # Go dependency extraction (imports, calls)
+        python_symbols.scm      # Python symbol extraction (functions, classes, assignments)
+        python_deps.scm         # Python dependency extraction (imports, calls)
+        js_symbols.scm          # JavaScript symbol extraction (functions, classes, methods, variables)
+        js_deps.scm             # JavaScript dependency extraction (imports, calls)
+        rust_symbols.scm        # Rust symbol extraction (functions, structs, enums, traits, impls)
+        rust_deps.scm           # Rust dependency extraction (use statements, calls)
+        java_symbols.scm        # Java symbol extraction (classes, interfaces, methods, enums)
+        java_deps.scm           # Java dependency extraction (imports, calls)
+        c_symbols.scm           # C symbol extraction (functions, structs, enums, typedefs)
+        c_deps.scm              # C dependency extraction (includes, calls)
+        cpp_symbols.scm         # C++ symbol extraction (classes, functions, templates, structs, enums)
+        cpp_deps.scm            # C++ dependency extraction (includes, calls)
+        csharp_symbols.scm      # C# symbol extraction (classes, interfaces, methods, structs, enums)
+        csharp_deps.scm         # C# dependency extraction (using, calls)
   store/
     db.go                       # SQLite connection (WAL mode, 0600 perms, single-writer pool)
     migrate.go                  # Forward-only embedded migration runner
     files.go                    # File registry CRUD (upsert, get, list, delete)
-    symbols.go                  # Symbol CRUD (batch insert, search, fuzzy match, BFS transitive deps)
+    symbols.go                  # Symbol CRUD (batch insert, search, fuzzy match, BFS transitive deps, dead code detection)
     dependencies.go             # Dependency edge CRUD (insert, batch, reverse lookup, file-scoped delete)
+    routes.go                   # Route CRUD (batch insert, filtering, path normalization, confidence matching)
     migrations/
       001_initial.sql           # Schema: files, symbols, dependencies, memories, indexes
       002_vec_symbols.sql       # Schema: vec_symbols (float32 BLOB embeddings for KNN search)
       003_vec_dimension_meta.sql # Schema: vec_meta (embedding dimension tracking)
+      005_routes.sql            # Schema: routes (HTTP route definitions and call sites)
   vectorstore/                  # Phase 3: embedding generation + vector search
     embedder.go                 # Embedder interface, MockEmbedder, SymbolEmbedText helper
     tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding, dynamic special IDs)
@@ -78,11 +101,17 @@ internal/
     skeleton.go                 # get_file_skeleton tool (structural outline, signatures only)
     usages.go                   # get_symbol_usages tool (reverse dependency lookup — who calls this?)
     calltree.go                 # get_call_tree tool (BFS call hierarchy, callees or callers, depth 1-3)
+    deadcode.go                 # find_dead_code tool (symbols with zero inbound dependency edges)
+    blastradius.go              # get_blast_radius tool (BFS callers, file grouping, depth summary)
+    routes.go                   # find_http_routes tool (route discovery + definition/call-site matching)
+    tokens.go                   # Token savings estimation, SessionTokenTracker (atomic int64 accumulator)
     timeout.go                  # WithTimeout middleware for tool handlers
   config/
     config.go                   # Viper-based config loading (.context-link.yaml, env vars, model paths)
+  watcher/
+    watcher.go                  # fsnotify file watcher (500ms debounce, incremental re-index on changes)
 pkg/models/
-  models.go                     # Shared types: Symbol, Memory, File, Dependency, ToolMetadata
+  models.go                     # Shared types: Symbol, Memory, File, Dependency, Route, ToolMetadata
 testdata/
   langs/ts/auth.ts              # TypeScript fixture (class, interface, type, methods, arrow fns)
   langs/tsx/Button.tsx           # TSX fixture (React component, interface, class)
@@ -105,6 +134,9 @@ get_code_by_symbol ──> SQLite BFS dependency graph ──> [code + deps]
     |
     ├──> get_symbol_usages ──> reverse dependency lookup ──> [all callers]
     ├──> get_call_tree ──> BFS call hierarchy (callees/callers, depth 1-3)
+    ├──> find_dead_code ──> symbols with zero inbound edges ──> [unused symbols]
+    ├──> get_blast_radius ──> BFS callers grouped by file/depth ──> [change impact]
+    ├──> find_http_routes ──> route definitions + call-site matching ──> [routes + matches]
     |
     v
 Agent Task Completion
@@ -126,6 +158,7 @@ The unified SQLite database (`.context-link.db`) contains:
 - **memories** — Agent/developer notes linked to symbols; stale-flagged on hash change, orphaned on deletion, recovered on re-index
 - **vec_symbols** — L2-normalized float32 embeddings as BLOBs (128-dim Model2Vec default, 384-dim ONNX optional); KNN search performed in Go via dot-product
 - **vec_meta** — Key-value metadata (tracks embedding dimension for mismatch detection on embedder switch)
+- **routes** — HTTP route definitions and call sites with method, path pattern, normalized path (for cross-framework matching), handler symbol reference, framework, and kind (definition/call_site)
 
 Key design decisions:
 - WAL mode for concurrent read performance
@@ -173,7 +206,13 @@ The resolver matches extracted call/extends/implements references against the sy
 
 The server uses a config-driven tool registry (`server.go:registerTools`). Each tool is a `toolRegistration{name, register}` pair. If `config.Tools` is non-empty, only listed tools are registered — this controls prompt token budget by hiding unused tools from agents. The memory group (`save_symbol_memory`, `get_symbol_memories`, `purge_stale_memories`) is registered as a block via the `memory` key.
 
+All tool responses include token savings metadata (`tokens_saved_est`, `cost_avoided_est`, `session_tokens_saved`, `session_cost_avoided`) via a shared `SessionTokenTracker`. Heuristic: 1 token ≈ 4 bytes, $3/MTok Sonnet pricing.
+
 Version is injected at build time via `-X main.version=<tag>` ldflags, passed through `server.New()` to the ping tool.
+
+### File Watcher
+
+The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). Directories like `node_modules`, `.git`, `vendor`, `__pycache__`, and `target` are excluded.
 
 ## Design Principles
 

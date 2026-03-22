@@ -14,7 +14,7 @@ import (
 )
 
 // RegisterSkeletonTool registers the get_file_skeleton MCP tool.
-func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
+func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("get_file_skeleton",
 		mcp.WithDescription(
 			"Returns a structural outline of a file — symbol signatures only, no code bodies. "+
@@ -26,7 +26,7 @@ func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName string, ti
 			mcp.Description("Relative file path (e.g., 'internal/store/symbols.go')."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, fileSkeletonHandler(db, repoName)))
+	s.AddTool(tool, WithTimeout(timeout, fileSkeletonHandler(db, repoName, tracker)))
 }
 
 // skeletonEntry is one symbol in the skeleton response.
@@ -40,7 +40,7 @@ type skeletonEntry struct {
 }
 
 // fileSkeletonHandler returns the MCP tool handler for get_file_skeleton.
-func fileSkeletonHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
+func fileSkeletonHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -63,19 +63,31 @@ func fileSkeletonHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 
 		entries := make([]skeletonEntry, len(symbols))
 		language := ""
+		var responseBytes int
 		for i, s := range symbols {
+			sig := extractSignature(s.CodeBlock)
 			entries[i] = skeletonEntry{
 				Name:          s.Name,
 				QualifiedName: s.QualifiedName,
 				Kind:          s.Kind,
-				Signature:     extractSignature(s.CodeBlock),
+				Signature:     sig,
 				StartLine:     s.StartLine,
 				EndLine:       s.EndLine,
 			}
+			responseBytes += len(sig)
 			if language == "" {
 				language = s.Language
 			}
 		}
+
+		// Token savings: skeleton returns signatures only vs. reading the entire file.
+		var fileBytes int
+		if f, err := store.GetFileByPath(ctx, db, repoName, filePath); err == nil {
+			fileBytes = int(f.SizeBytes)
+		}
+		savings := ComputeSavings(fileBytes, responseBytes)
+		sessionTotal := tracker.Record(savings.Saved)
+		timingMs := time.Since(start).Milliseconds()
 
 		result := map[string]any{
 			"file_path":    filePath,
@@ -83,7 +95,11 @@ func fileSkeletonHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 			"symbols":      entries,
 			"symbol_count": len(entries),
 			"metadata": models.ToolMetadata{
-				TimingMs: time.Since(start).Milliseconds(),
+				TimingMs:           timingMs,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

@@ -13,7 +13,7 @@ import (
 
 // RegisterGetCodeTool registers the get_code_by_symbol tool with the MCP server.
 // timeout is applied to each tool call.
-func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration) {
+func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("get_code_by_symbol",
 		mcp.WithDescription(
 			"Extracts the exact source code of a named symbol (function, class, interface, type) "+
@@ -29,11 +29,11 @@ func RegisterGetCodeTool(s *server.MCPServer, db *store.DB, repoName string, tim
 		),
 	)
 
-	s.AddTool(tool, WithTimeout(timeout, getCodeBySymbolHandler(db, repoName)))
+	s.AddTool(tool, WithTimeout(timeout, getCodeBySymbolHandler(db, repoName, tracker)))
 }
 
 // getCodeBySymbolHandler returns the MCP tool handler for get_code_by_symbol.
-func getCodeBySymbolHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
+func getCodeBySymbolHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -98,6 +98,24 @@ func getCodeBySymbolHandler(db *store.DB, repoName string) server.ToolHandlerFun
 
 		timingMs := time.Since(start).Milliseconds()
 
+		// Token savings: sum file sizes the agent would have read vs. code blocks returned.
+		fileSet := map[string]struct{}{sym.FilePath: {}}
+		for _, d := range deps {
+			fileSet[d.FilePath] = struct{}{}
+		}
+		var totalFileBytes int
+		for fp := range fileSet {
+			if f, err := store.GetFileByPath(ctx, db, repoName, fp); err == nil {
+				totalFileBytes += int(f.SizeBytes)
+			}
+		}
+		responseBytes := len(sym.CodeBlock)
+		for _, d := range deps {
+			responseBytes += len(d.CodeBlock)
+		}
+		savings := ComputeSavings(totalFileBytes, responseBytes)
+		sessionTotal := tracker.Record(savings.Saved)
+
 		result := map[string]any{
 			"symbol": map[string]any{
 				"name":           sym.Name,
@@ -115,7 +133,11 @@ func getCodeBySymbolHandler(db *store.DB, repoName string) server.ToolHandlerFun
 			"memories":         memResults,
 			"memory_count":     len(memResults),
 			"metadata": models.ToolMetadata{
-				TimingMs: timingMs,
+				TimingMs:           timingMs,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

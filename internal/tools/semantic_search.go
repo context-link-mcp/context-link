@@ -31,20 +31,19 @@ type semanticSearchResponse struct {
 }
 
 type semanticSearchMeta struct {
-	TimingMs     int64  `json:"timing_ms"`
-	TotalResults int    `json:"total_results"`
-	Query        string `json:"query"`
+	TimingMs           int64  `json:"timing_ms"`
+	TotalResults       int    `json:"total_results"`
+	Query              string `json:"query"`
+	TokensSavedEst     int64  `json:"tokens_saved_est,omitempty"`
+	CostAvoidedEst     string `json:"cost_avoided_est,omitempty"`
+	SessionTokensSaved int64  `json:"session_tokens_saved,omitempty"`
+	SessionCostAvoided string `json:"session_cost_avoided,omitempty"`
 }
 
 // RegisterSemanticSearchTool registers the semantic_search_symbols MCP tool.
 // If embedder is nil, the tool returns an appropriate "not available" error.
 // If vecCache is non-nil, KNN search uses the in-memory cache for faster queries.
-func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string, timeout time.Duration, vecCache ...*vectorstore.VectorCache) {
-	var cache *vectorstore.VectorCache
-	if len(vecCache) > 0 {
-		cache = vecCache[0]
-	}
-
+func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string, timeout time.Duration, tracker *SessionTokenTracker, vecCache *vectorstore.VectorCache) {
 	tool := mcp.NewTool("semantic_search_symbols",
 		mcp.WithDescription(
 			"Discover relevant code symbols by natural-language intent. "+
@@ -69,11 +68,11 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 			mcp.Description("Minimum cosine similarity threshold (0.0–1.0, default: 0.3). Higher values return fewer but more relevant results."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName, cache)))
+	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName, tracker, vecCache)))
 }
 
 // semanticSearchHandler returns the ToolHandlerFunc for semantic_search_symbols.
-func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName string, cache *vectorstore.VectorCache) server.ToolHandlerFunc {
+func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName string, tracker *SessionTokenTracker, cache *vectorstore.VectorCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -171,18 +170,36 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		memoryCounts, _ := store.CountMemoriesBySymbolIDs(ctx, db, symbolIDs)
 
 		var results []SemanticSearchResult
+		fileSet := map[string]struct{}{}
 		for _, c := range candidates {
 			r := c.result
 			r.MemoryCount = memoryCounts[c.symbolID]
 			results = append(results, r)
+			fileSet[r.FilePath] = struct{}{}
 		}
+
+		// Token savings: agent would read all matched files; we return metadata only.
+		var totalFileBytes int
+		for fp := range fileSet {
+			if f, err := store.GetFileByPath(ctx, db, repoName, fp); err == nil {
+				totalFileBytes += int(f.SizeBytes)
+			}
+		}
+		responseBytes := len(results) * 80
+		savings := ComputeSavings(totalFileBytes, responseBytes)
+		sessionTotal := tracker.Record(savings.Saved)
+		timingMs := time.Since(start).Milliseconds()
 
 		resp := semanticSearchResponse{
 			Results: results,
 			Metadata: semanticSearchMeta{
-				TimingMs:     time.Since(start).Milliseconds(),
-				TotalResults: len(results),
-				Query:        query,
+				TimingMs:           timingMs,
+				TotalResults:       len(results),
+				Query:              query,
+				TokensSavedEst:     savings.Saved,
+				CostAvoidedEst:     FormatCost(savings.Saved),
+				SessionTokensSaved: sessionTotal,
+				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
 

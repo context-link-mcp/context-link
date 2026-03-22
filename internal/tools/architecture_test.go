@@ -78,7 +78,7 @@ Principle 2.
 	err := os.WriteFile(filepath.Join(dir, "ARCHITECTURE.md"), []byte(content), 0o600)
 	require.NoError(t, err)
 
-	handler := readArchitectureRulesHandler(dir)
+	handler := readArchitectureRulesHandler(dir, NewSessionTokenTracker())
 
 	// Build a minimal CallToolRequest.
 	result, err := callHandler(t, handler)
@@ -91,7 +91,7 @@ func TestReadArchitectureRulesHandler_Missing(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir() // empty dir — no ARCHITECTURE.md
-	handler := readArchitectureRulesHandler(dir)
+	handler := readArchitectureRulesHandler(dir, NewSessionTokenTracker())
 
 	result, err := callHandler(t, handler)
 	require.NoError(t, err)

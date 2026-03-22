@@ -52,6 +52,20 @@ type Dependency struct {
 	Kind     string // "call","import","extends","implements"
 }
 
+// Route represents an HTTP route definition or call site detected during indexing.
+type Route struct {
+	ID              int64  `json:"id"`
+	RepoName        string `json:"repo_name"`
+	Method          string `json:"method"`
+	PathPattern     string `json:"path_pattern"`
+	NormalizedPath  string `json:"normalized_path"`
+	HandlerSymbolID *int64 `json:"handler_symbol_id,omitempty"`
+	FilePath        string `json:"file_path"`
+	StartLine       int    `json:"start_line"`
+	Framework       string `json:"framework"`
+	Kind            string `json:"kind"` // "definition" or "call_site"
+}
+
 // Section represents a parsed section of a Markdown document.
 type Section struct {
 	Title   string `json:"title"`
@@ -60,6 +74,10 @@ type Section struct {
 
 // ToolMetadata is included in every MCP tool response for observability.
 type ToolMetadata struct {
-	TimingMs int64  `json:"timing_ms"`
-	Source   string `json:"source,omitempty"`
+	TimingMs           int64  `json:"timing_ms"`
+	Source             string `json:"source,omitempty"`
+	TokensSavedEst     int64  `json:"tokens_saved_est,omitempty"`
+	CostAvoidedEst     string `json:"cost_avoided_est,omitempty"`
+	SessionTokensSaved int64  `json:"session_tokens_saved,omitempty"`
+	SessionCostAvoided string `json:"session_cost_avoided,omitempty"`
 }

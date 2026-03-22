@@ -13,6 +13,17 @@ import (
 // ErrSymbolNotFound is returned when a symbol record is not found.
 var ErrSymbolNotFound = errors.New("symbol not found")
 
+// GetSymbolByID retrieves a symbol by its primary key.
+func GetSymbolByID(ctx context.Context, db *DB, id int64) (*models.Symbol, error) {
+	row := db.QueryRowContext(ctx,
+		`SELECT id, repo_name, name, qualified_name, kind, file_path,
+		        content_hash, code_block, start_line, end_line, language, indexed_at
+		 FROM symbols WHERE id = ?`,
+		id,
+	)
+	return scanSymbol(row)
+}
+
 // GetSymbolByName retrieves a symbol by exact name within a repo.
 // If multiple symbols share the same name, returns the first match.
 func GetSymbolByName(ctx context.Context, db *DB, repoName, name string) (*models.Symbol, error) {
@@ -446,6 +457,68 @@ func GetCallTree(ctx context.Context, db *DB, symbolID int64, direction string, 
 	}
 
 	return result, nil
+}
+
+// DeadCodeOptions controls filtering for FindDeadSymbols.
+type DeadCodeOptions struct {
+	FilePath        string // optional: limit to a specific file path
+	Kind            string // optional: filter by symbol kind
+	ExcludeExported bool   // if true, skip symbols starting with uppercase (Go exported)
+	Limit           int    // max results (default 50)
+}
+
+// FindDeadSymbols returns symbols with zero inbound dependency edges,
+// excluding common entry points (main, init, Init, Main).
+func FindDeadSymbols(ctx context.Context, db *DB, repoName string, opts DeadCodeOptions) ([]models.Symbol, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Limit > 200 {
+		opts.Limit = 200
+	}
+
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, "s.repo_name = ?")
+	args = append(args, repoName)
+
+	conditions = append(conditions, "d.id IS NULL")
+	conditions = append(conditions, "s.name NOT IN ('main', 'init', 'Init', 'Main')")
+	conditions = append(conditions, "s.kind NOT IN ('variable', 'import')")
+
+	if opts.FilePath != "" {
+		conditions = append(conditions, "s.file_path = ?")
+		args = append(args, opts.FilePath)
+	}
+	if opts.Kind != "" {
+		conditions = append(conditions, "s.kind = ?")
+		args = append(args, opts.Kind)
+	}
+	if opts.ExcludeExported {
+		conditions = append(conditions, "s.name NOT GLOB '[A-Z]*'")
+	}
+
+	args = append(args, opts.Limit)
+
+	query := fmt.Sprintf(
+		`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+		        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+		 FROM symbols s
+		 LEFT JOIN dependencies d ON d.callee_id = s.id
+		 WHERE %s
+		 ORDER BY s.file_path, s.start_line
+		 LIMIT ?`,
+		strings.Join(conditions, " AND "),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to find dead symbols: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSymbols(rows)
 }
 
 // CountSymbols returns the total number of symbols for a repo.
