@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/context-link/context-link/pkg/models"
 )
@@ -63,10 +66,18 @@ func NewWalker(registry *LanguageRegistry, repoRoot string) *Walker {
 
 // Walk discovers all indexable source files under the repo root.
 // It respects .gitignore patterns and skips files exceeding maxFileSize.
+// Phase 1 discovers files (no I/O beyond stat), Phase 2 hashes in parallel.
 func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 	gitignorePatterns := w.loadGitignore()
 
-	var files []DiscoveredFile
+	// Phase 1: Discover files (no hashing — fast directory traversal).
+	type candidate struct {
+		path    string
+		relPath string
+		size    int64
+		ext     string
+	}
+	var candidates []candidate
 
 	err := filepath.WalkDir(w.repoRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -74,14 +85,12 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			return nil // skip errored paths, don't abort
 		}
 
-		// Check context cancellation.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Skip default ignore directories.
 		if d.IsDir() {
 			name := d.Name()
 			for _, pattern := range w.ignorePatterns {
@@ -90,7 +99,6 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 				}
 			}
 
-			// Check gitignore patterns for directories.
 			relDir, _ := filepath.Rel(w.repoRoot, path)
 			relDir = filepath.ToSlash(relDir)
 			if w.matchesGitignore(relDir+"/", gitignorePatterns) {
@@ -100,13 +108,11 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			return nil
 		}
 
-		// Only process files with registered extensions.
 		ext := filepath.Ext(path)
 		if _, ok := w.registry.GetAdapter(ext); !ok {
 			return nil
 		}
 
-		// Check gitignore for files.
 		relPath, err := filepath.Rel(w.repoRoot, path)
 		if err != nil {
 			slog.Warn("walker: failed to compute relative path", "path", path, "error", err)
@@ -118,7 +124,6 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			return nil
 		}
 
-		// Check file size.
 		info, err := d.Info()
 		if err != nil {
 			slog.Warn("walker: failed to stat file", "path", path, "error", err)
@@ -129,29 +134,68 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			return nil
 		}
 
-		// Compute content hash.
-		hash, err := hashFile(path)
-		if err != nil {
-			slog.Warn("walker: failed to hash file", "path", path, "error", err)
-			return nil
-		}
-
-		files = append(files, DiscoveredFile{
-			Path:        path,
-			RelPath:     relPath,
-			ContentHash: hash,
-			SizeBytes:   info.Size(),
-			Extension:   ext,
+		candidates = append(candidates, candidate{
+			path:    path,
+			relPath: relPath,
+			size:    info.Size(),
+			ext:     ext,
 		})
 
 		return nil
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("indexer: walk failed: %w", err)
 	}
 
-	return &WalkResult{Files: files}, nil
+	// Phase 2: Hash files in parallel with bounded concurrency.
+	files := make([]DiscoveredFile, len(candidates))
+	var mu sync.Mutex
+	var hashErrors int
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(8) // bounded parallelism for I/O
+
+	for i, c := range candidates {
+		g.Go(func() error {
+			select {
+			case <-gCtx.Done():
+				return gCtx.Err()
+			default:
+			}
+
+			hash, err := hashFile(c.path)
+			if err != nil {
+				slog.Warn("walker: failed to hash file", "path", c.path, "error", err)
+				mu.Lock()
+				hashErrors++
+				mu.Unlock()
+				return nil // non-fatal
+			}
+
+			files[i] = DiscoveredFile{
+				Path:        c.path,
+				RelPath:     c.relPath,
+				ContentHash: hash,
+				SizeBytes:   c.size,
+				Extension:   c.ext,
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("indexer: parallel hashing failed: %w", err)
+	}
+
+	// Filter out files that failed hashing (empty ContentHash).
+	result := make([]DiscoveredFile, 0, len(files)-hashErrors)
+	for _, f := range files {
+		if f.ContentHash != "" {
+			result = append(result, f)
+		}
+	}
+
+	return &WalkResult{Files: result}, nil
 }
 
 // ToModelFiles converts discovered files to model File structs.

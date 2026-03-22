@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+
 	"github.com/context-link/context-link/pkg/models"
 )
 
@@ -206,35 +208,42 @@ func getTransitiveDependencies(ctx context.Context, db *DB, symbolID int64, maxD
 	frontier := []int64{symbolID}
 
 	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		// Batch query: fetch all dependencies for the entire frontier at once.
+		placeholders := make([]string, len(frontier))
+		args := make([]any, len(frontier))
+		for i, id := range frontier {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+
+		query := fmt.Sprintf(
+			`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+			        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+			 FROM dependencies d
+			 JOIN symbols s ON s.id = d.callee_id
+			 WHERE d.caller_id IN (%s)`,
+			strings.Join(placeholders, ","),
+		)
+
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: failed to get batch dependencies: %w", err)
+		}
+
+		syms, err := scanSymbols(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+
 		var nextFrontier []int64
-
-		for _, id := range frontier {
-			rows, err := db.QueryContext(ctx,
-				`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
-				        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
-				 FROM dependencies d
-				 JOIN symbols s ON s.id = d.callee_id
-				 WHERE d.caller_id = ?`,
-				id,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("store: failed to get dependencies for symbol %d: %w", id, err)
+		for _, s := range syms {
+			if seen[s.ID] {
+				continue
 			}
-
-			syms, err := scanSymbols(rows)
-			rows.Close()
-			if err != nil {
-				return nil, err
-			}
-
-			for _, s := range syms {
-				if seen[s.ID] {
-					continue
-				}
-				seen[s.ID] = true
-				result = append(result, s)
-				nextFrontier = append(nextFrontier, s.ID)
-			}
+			seen[s.ID] = true
+			result = append(result, s)
+			nextFrontier = append(nextFrontier, s.ID)
 		}
 
 		frontier = nextFrontier
@@ -266,6 +275,78 @@ func GetImportsForFile(ctx context.Context, db *DB, repoName, filePath string) (
 		imports = append(imports, imp)
 	}
 	return imports, rows.Err()
+}
+
+// GetSymbolsByIDs returns symbols by their IDs within a repo, keyed by ID.
+// Used to batch-fetch symbol metadata for KNN search results.
+func GetSymbolsByIDs(ctx context.Context, db *DB, repoName string, ids []int64) (map[int64]models.Symbol, error) {
+	if len(ids) == 0 {
+		return make(map[int64]models.Symbol), nil
+	}
+
+	// Build parameterized IN clause.
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, repoName)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, repo_name, name, qualified_name, kind, file_path,
+		        content_hash, code_block, start_line, end_line, language, indexed_at
+		 FROM symbols WHERE repo_name = ? AND id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get symbols by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]models.Symbol, len(ids))
+	for rows.Next() {
+		var s models.Symbol
+		if err := rows.Scan(
+			&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+			&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: failed to scan symbol row: %w", err)
+		}
+		result[s.ID] = s
+	}
+	return result, rows.Err()
+}
+
+// GetSymbolsByRepo returns all symbols for a repo, grouped by file path.
+// Used to pre-compute a symbol map for phases that need per-file symbol lookups.
+func GetSymbolsByRepo(ctx context.Context, db *DB, repoName string) (map[string][]models.Symbol, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, repo_name, name, qualified_name, kind, file_path,
+		        content_hash, code_block, start_line, end_line, language, indexed_at
+		 FROM symbols WHERE repo_name = ?
+		 ORDER BY file_path, start_line`,
+		repoName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get symbols for repo %s: %w", repoName, err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]models.Symbol)
+	for rows.Next() {
+		var s models.Symbol
+		if err := rows.Scan(
+			&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+			&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: failed to scan symbol row: %w", err)
+		}
+		result[s.FilePath] = append(result[s.FilePath], s)
+	}
+	return result, rows.Err()
 }
 
 // CountSymbols returns the total number of symbols for a repo.

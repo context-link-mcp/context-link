@@ -155,9 +155,12 @@ func (e *Extractor) processSymbolMatch(
 	}
 
 	// Use the outer node (full declaration) as the code block.
-	codeBlock := outerNode.Content(source)
-	if codeBlock == "" {
+	codeBlock, ok := safeNodeContent(outerNode, source)
+	if !ok || codeBlock == "" {
 		codeBlock = body
+	}
+	if codeBlock == "" {
+		return nil
 	}
 
 	contentHash := hashString(codeBlock)

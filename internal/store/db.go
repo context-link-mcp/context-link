@@ -21,7 +21,7 @@ type DB struct {
 // the required PRAGMA settings for safe concurrent access.
 func Open(path string) (*DB, error) {
 	// modernc/sqlite DSN supports query parameters for pragmas.
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000", path)
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=-8000&_temp_store=memory", path)
 
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {

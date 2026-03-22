@@ -325,7 +325,7 @@ Discovers symbols by natural-language intent via vector embeddings. Does **not**
       "similarity_score": 0.87, "memory_count": 1
     }
   ],
-  "metadata": { "timing_ms": 45, "total_results": 1, "query": "token validation" }
+  "metadata": { "timing_ms": 0, "total_results": 1, "query": "token validation" }
 }
 ```
 
@@ -379,6 +379,95 @@ Deletes stale memories. Use `orphaned_only=true` to only delete memories with no
 5. **Add fixtures** — create `testdata/langs/<lang>/` and update golden snapshots
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full component map and project structure.
+
+## Benchmarks
+
+Measured after Phase 5 optimizations (batch DB operations, eliminated double-parsing). All benchmarks run on a single machine with SQLite WAL mode.
+
+### Indexing Performance
+
+| Repository | Language | Files | Symbols | Embeddings | Index Time | DB Size |
+|------------|----------|-------|---------|------------|------------|---------|
+| [context-link](https://github.com/context-link/context-link) (self) | Go | 59 | 539 | 528 | 1.05s | 1.5 MB |
+| [echo](https://github.com/labstack/echo) | Go | 90 | 1,901 | 1,576 | 1.85s | 3.1 MB |
+| [gin](https://github.com/gin-gonic/gin) | Go | 99 | 1,892 | 1,722 | 3.54s | 2.4 MB |
+| [tRPC](https://github.com/trpc/trpc) | TypeScript | 381 | 772 | 767 | 6.82s | — |
+
+### Semantic Search Latency
+
+Measured on context-link (560 symbols, 545 embeddings), 100 iterations per query, 10 diverse queries.
+
+| Mode | P50 | Avg | Description |
+|------|-----|-----|-------------|
+| Uncached (DB scan) | 1,880µs | 1,914µs | Full SQLite BLOB read + decode per query |
+| Cached cold | 2,180µs | 2,159µs | First call loads vectors into memory |
+| **Cached warm** | **197µs** | **187µs** | In-memory KNN dot-product scan |
+| **End-to-end** | **202µs** | **196µs** | Embed query + cached KNN search |
+
+**150x improvement** over pre-optimization baseline (~30ms → 0.2ms). The in-memory vector cache eliminates all SQLite I/O after the first query.
+
+### Semantic Search Quality
+
+Example queries and top results:
+
+| Repo | Query | Top Results |
+|------|-------|-------------|
+| echo | "static file serving" | `Static`, `StaticFileHandler`, `serveFile` |
+| gin | "route parameter binding" | `Param`, `Params`, `ShouldBindUri` |
+| tRPC | "middleware pipeline" | `createMiddlewareFactory`, `createBuilder` |
+| context-link | "tree-sitter parsing" | `processFile`, `extractSymbolsAndDeps` |
+
+### Optimization Impact
+
+**Round 1** — Eliminated redundant work in the indexing pipeline:
+
+| Optimization | Change | Impact |
+|--------------|--------|--------|
+| Eliminate double-parsing | Removed full re-parse pass during dependency resolution | ~2x faster indexing |
+| Batch embedding upserts | Transaction + prepared statement instead of per-row inserts | ~5-10x faster embedding storage |
+| Batch dependency inserts | Used existing `BatchInsertDependencies` | Fewer DB round-trips |
+| `vec_symbols` repo index | Added `idx_vec_symbols_repo` | Faster KNN scans on multi-repo DBs |
+
+**Round 2** — Architecture, function, and code-level optimizations:
+
+| Optimization | Change | Impact |
+|--------------|--------|--------|
+| In-memory vector cache (O1) | Pre-loads embeddings on first query, pure dot-product KNN | Search: 1,880µs → 197µs (10x) |
+| Batch file hash lookup (O2) | Single `GetFileHashIndex` query replaces N per-file lookups | Incremental check: near-instant |
+| Pre-computed symbol map (O3) | One `GetSymbolsByRepo` call replaces 3×N per-file queries | Eliminated ~3N DB round-trips |
+| Batch semantic search lookup (O4) | `GetSymbolsByIDs` replaces per-hit query loop | 30 queries → 1 query |
+| Batch BFS dependencies (O5) | `WHERE caller_id IN (...)` replaces per-node queries | N queries → 1 per depth level |
+| Parallel file hashing (O6) | `errgroup` with 8 goroutines for walker I/O | 2-4x faster walk on large repos |
+| Batch orphan relinking (O7) | `GetAllOrphanedMemories` replaces per-symbol queries | N queries → 1 query |
+| SQLite PRAGMA tuning (O8) | `synchronous=NORMAL`, 8 MB cache, memory temp store | 10-20% faster writes |
+| Heap-based top-k (O10) | `container/heap` replaces `sort.Slice` for KNN | O(n log k) vs O(n log n) |
+
+**Cumulative: 4.9x indexing speedup** (5.1s → 1.05s), **150x search speedup** (30ms → 0.2ms), **9ms incremental re-index** (no changes).
+
+### Token Reduction vs. Blind File Read
+
+The core value proposition — `get_code_by_symbol` returns only the code you need instead of entire files.
+
+| Scenario | Avg Token Reduction | Target |
+|----------|---------------------|--------|
+| Single symbol lookup (depth=0) | **91.0%** | >80% |
+| Aggregate (all symbols vs all files) | **92.7%** | >80% |
+| Symbol + dependencies (depth=1) | **85.7%** | >80% |
+
+Measured on context-link itself (59 files, 1,056 symbols). A typical `get_code_by_symbol` call returns ~9% of what reading the full file would require.
+
+### Semantic Search Token Efficiency
+
+A `semantic_search_symbols` call returning 10 results averages **~388 tokens** — this is a metadata-only listing (symbol names, kinds, file paths, similarity scores) with no code. The full end-to-end flow (search → extract top result with dependencies) compares favorably to reading source files directly:
+
+| Scenario | Avg Tokens | vs. Full File |
+|----------|-----------|---------------|
+| Search only (10 results) | ~388 | Discovery without reading any file |
+| Search + `get_code_by_symbol` (depth=0) | ~615 | Top result extraction |
+| Search + `get_code_by_symbol` (depth=1) | ~691 | Top result with dependencies |
+| Reading the full source file | ~867 | Baseline comparison |
+
+For large files the savings are dramatic (86%+ reduction for a 3,200-token file). The comparison is conservative — in practice, an agent without semantic search would read multiple files to find the right symbol, making real-world savings significantly higher.
 
 ## Security
 

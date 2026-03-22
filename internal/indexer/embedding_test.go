@@ -9,6 +9,7 @@ import (
 	"github.com/context-link/context-link/internal/indexer/adapters"
 	"github.com/context-link/context-link/internal/store"
 	"github.com/context-link/context-link/internal/vectorstore"
+	"github.com/context-link/context-link/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,7 +50,11 @@ func TestGenerateEmbeddings_WithMockEmbedder(t *testing.T) {
 
 	idx := NewIndexer(registry, db, 1, mockEmbedder)
 
-	count := idx.generateEmbeddings(ctx, "embrepo", []string{"sample.go"})
+	// Build symbol map (simulates what IndexRepo does after Phase 4).
+	symsByFile, err := store.GetSymbolsByRepo(ctx, db, "embrepo")
+	require.NoError(t, err)
+
+	count := idx.generateEmbeddings(ctx, "embrepo", []string{"sample.go"}, symsByFile)
 	assert.Equal(t, len(symbols), count, "should generate one embedding per symbol")
 
 	// Verify embeddings were persisted in vec_symbols.
@@ -71,7 +76,8 @@ func TestGenerateEmbeddings_UnknownFile(t *testing.T) {
 	registry := NewLanguageRegistry()
 	idx := NewIndexer(registry, db, 1, mockEmbedder)
 
-	count := idx.generateEmbeddings(ctx, "repo", []string{"no_such_file.go"})
+	emptySymMap := make(map[string][]models.Symbol)
+	count := idx.generateEmbeddings(ctx, "repo", []string{"no_such_file.go"}, emptySymMap)
 	assert.Equal(t, 0, count, "no embeddings should be generated for an unknown file path")
 }
 

@@ -72,6 +72,29 @@ func ListFiles(ctx context.Context, db *DB, repoName string) ([]models.File, err
 	return files, rows.Err()
 }
 
+// GetFileHashIndex returns a map of path → content_hash for all files in a repo.
+// Used for batch comparison during incremental indexing (avoids N+1 queries).
+func GetFileHashIndex(ctx context.Context, db *DB, repoName string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT path, content_hash FROM files WHERE repo_name = ?`,
+		repoName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to build file hash index for %s: %w", repoName, err)
+	}
+	defer rows.Close()
+
+	index := make(map[string]string)
+	for rows.Next() {
+		var path, hash string
+		if err := rows.Scan(&path, &hash); err != nil {
+			return nil, fmt.Errorf("store: failed to scan file hash row: %w", err)
+		}
+		index[path] = hash
+	}
+	return index, rows.Err()
+}
+
 // DeleteFileByPath removes a file record from the database.
 func DeleteFileByPath(ctx context.Context, db *DB, repoName, path string) error {
 	_, err := db.ExecContext(ctx,

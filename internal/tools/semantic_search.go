@@ -31,14 +31,20 @@ type semanticSearchResponse struct {
 }
 
 type semanticSearchMeta struct {
-	TimingMs     int64 `json:"timing_ms"`
-	TotalResults int   `json:"total_results"`
+	TimingMs     int64  `json:"timing_ms"`
+	TotalResults int    `json:"total_results"`
 	Query        string `json:"query"`
 }
 
 // RegisterSemanticSearchTool registers the semantic_search_symbols MCP tool.
 // If embedder is nil, the tool returns an appropriate "not available" error.
-func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string, timeout time.Duration) {
+// If vecCache is non-nil, KNN search uses the in-memory cache for faster queries.
+func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vectorstore.Embedder, repoName string, timeout time.Duration, vecCache ...*vectorstore.VectorCache) {
+	var cache *vectorstore.VectorCache
+	if len(vecCache) > 0 {
+		cache = vecCache[0]
+	}
+
 	tool := mcp.NewTool("semantic_search_symbols",
 		mcp.WithDescription(
 			"Discover relevant code symbols by natural-language intent. "+
@@ -63,11 +69,11 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 			mcp.Description("Minimum cosine similarity threshold (0.0–1.0, default: 0.3). Higher values return fewer but more relevant results."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName)))
+	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName, cache)))
 }
 
 // semanticSearchHandler returns the ToolHandlerFunc for semantic_search_symbols.
-func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName string) server.ToolHandlerFunc {
+func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName string, cache *vectorstore.VectorCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
@@ -104,53 +110,55 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: failed to embed query: %v", err)), nil
 		}
 
-		// --- KNN search (fetch extra candidates for post-filter headroom) ---
-		hits, err := vectorstore.KNNSearch(ctx, db, repoName, queryVec, topK*3, minSimilarity)
+		// --- KNN search (use cache if available, otherwise fall back to DB scan) ---
+		var hits []vectorstore.SearchResult
+		if cache != nil {
+			hits, err = vectorstore.KNNSearchCached(ctx, db, cache, queryVec, topK*3, minSimilarity)
+		} else {
+			hits, err = vectorstore.KNNSearch(ctx, db, repoName, queryVec, topK*3, minSimilarity)
+		}
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: search failed: %v", err)), nil
 		}
 
-		// --- Join with symbols table and apply optional filters ---
-		var results []SemanticSearchResult
-		// Collect symbol IDs for batch memory count lookup.
+		// --- Batch-fetch symbols for all KNN hits (single query instead of N+1) ---
+		hitIDs := make([]int64, len(hits))
+		for i, h := range hits {
+			hitIDs[i] = h.SymbolID
+		}
+		symbolMap, err := store.GetSymbolsByIDs(ctx, db, repoName, hitIDs)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: failed to fetch symbols: %v", err)), nil
+		}
+
+		// Apply filters and collect results in similarity order.
 		type candidate struct {
 			symbolID int64
 			result   SemanticSearchResult
 		}
 		var candidates []candidate
-
 		for _, hit := range hits {
 			if len(candidates) >= topK {
 				break
 			}
-
-			row := db.QueryRowContext(ctx, `
-				SELECT id, name, qualified_name, kind, file_path, language
-				FROM symbols
-				WHERE id = ? AND repo_name = ?
-			`, hit.SymbolID, repoName)
-
-			var symID int64
-			var name, qualName, kind, filePath, language string
-			if err := row.Scan(&symID, &name, &qualName, &kind, &filePath, &language); err != nil {
+			sym, ok := symbolMap[hit.SymbolID]
+			if !ok {
 				continue // symbol may have been deleted since embedding was stored
 			}
-
-			if kindFilter != "" && kind != kindFilter {
+			if kindFilter != "" && sym.Kind != kindFilter {
 				continue
 			}
-			if pathPrefix != "" && !strings.HasPrefix(filePath, pathPrefix) {
+			if pathPrefix != "" && !strings.HasPrefix(sym.FilePath, pathPrefix) {
 				continue
 			}
-
 			candidates = append(candidates, candidate{
-				symbolID: symID,
+				symbolID: sym.ID,
 				result: SemanticSearchResult{
-					SymbolName:    name,
-					QualifiedName: qualName,
-					Kind:          kind,
-					FilePath:      filePath,
-					Language:      language,
+					SymbolName:    sym.Name,
+					QualifiedName: sym.QualifiedName,
+					Kind:          sym.Kind,
+					FilePath:      sym.FilePath,
+					Language:      sym.Language,
 					Similarity:    hit.Similarity,
 				},
 			})
@@ -163,6 +171,7 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		}
 		memoryCounts, _ := store.CountMemoriesBySymbolIDs(ctx, db, symbolIDs)
 
+		var results []SemanticSearchResult
 		for _, c := range candidates {
 			r := c.result
 			r.MemoryCount = memoryCounts[c.symbolID]

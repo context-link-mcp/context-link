@@ -61,7 +61,7 @@ func TestSemanticSearch_NoQuery(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	result, err := handler(context.Background(), mcp.CallToolRequest{})
 	require.NoError(t, err)
 	assert.True(t, result.IsError, "missing query should return error")
@@ -71,7 +71,7 @@ func TestSemanticSearch_NilEmbedder(t *testing.T) {
 	t.Parallel()
 	db, _, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, nil, repo)
+	handler := semanticSearchHandler(db, nil, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"query": "token validation"}
 	result, err := handler(context.Background(), req)
@@ -83,7 +83,7 @@ func TestSemanticSearch_ReturnsResults(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":          "function validateToken",
@@ -110,7 +110,7 @@ func TestSemanticSearch_TopKLimit(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":          "auth",
@@ -133,7 +133,7 @@ func TestSemanticSearch_KindFilter(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":          "auth",
@@ -158,7 +158,7 @@ func TestSemanticSearch_FilePathPrefixFilter(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":            "database",
@@ -184,7 +184,7 @@ func TestSemanticSearch_TopKOutOfRange_Clamped(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":          "function",
@@ -201,7 +201,7 @@ func TestSemanticSearch_MetadataFields(t *testing.T) {
 	t.Parallel()
 	db, emb, repo := setupSearchDB(t)
 
-	handler := semanticSearchHandler(db, emb, repo)
+	handler := semanticSearchHandler(db, emb, repo, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"query":          "token",

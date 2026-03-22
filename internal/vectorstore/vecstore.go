@@ -1,16 +1,142 @@
 package vectorstore
 
 import (
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/context-link/context-link/internal/store"
 )
+
+// candidateHeap is a min-heap of candidates for top-k selection.
+// The smallest similarity is at the top, so we can efficiently evict it
+// when a better candidate arrives.
+type candidateHeap []candidate
+
+type candidate struct {
+	symbolID int64
+	sim      float32
+}
+
+func (h candidateHeap) Len() int            { return len(h) }
+func (h candidateHeap) Less(i, j int) bool  { return h[i].sim < h[j].sim } // min-heap
+func (h candidateHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *candidateHeap) Push(x any)         { *h = append(*h, x.(candidate)) }
+func (h *candidateHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+
+// topKFromHeap extracts sorted results (descending similarity) from a min-heap.
+func topKFromHeap(h *candidateHeap) []SearchResult {
+	results := make([]SearchResult, h.Len())
+	for i := len(results) - 1; i >= 0; i-- {
+		c := heap.Pop(h).(candidate)
+		results[i] = SearchResult{SymbolID: c.symbolID, Similarity: c.sim}
+	}
+	return results
+}
+
+// VectorCache holds pre-loaded embeddings in memory for fast KNN search.
+// Thread-safe for concurrent reads; invalidated on writes.
+type VectorCache struct {
+	mu        sync.RWMutex
+	symbolIDs []int64     // parallel arrays
+	vectors   [][]float32 // each is dim-length
+	repoName  string
+	loaded    bool
+}
+
+// NewVectorCache creates an empty cache for the given repo.
+func NewVectorCache(repoName string) *VectorCache {
+	return &VectorCache{repoName: repoName}
+}
+
+// Invalidate clears the cache, forcing a reload on next search.
+func (vc *VectorCache) Invalidate() {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	vc.loaded = false
+	vc.symbolIDs = nil
+	vc.vectors = nil
+}
+
+// load populates the cache from the database if not already loaded.
+func (vc *VectorCache) load(ctx context.Context, db *store.DB) error {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+
+	if vc.loaded {
+		return nil
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT symbol_id, embedding FROM vec_symbols WHERE repo_name = ?`,
+		vc.repoName,
+	)
+	if err != nil {
+		return fmt.Errorf("vectorstore: cache load for repo %q: %w", vc.repoName, err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var ids []int64
+	var vecs [][]float32
+	for rows.Next() {
+		var symbolID int64
+		var blob []byte
+		if err := rows.Scan(&symbolID, &blob); err != nil {
+			return fmt.Errorf("vectorstore: cache scan row: %w", err)
+		}
+		ids = append(ids, symbolID)
+		vecs = append(vecs, decodeFloat32s(blob))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("vectorstore: cache iterate: %w", err)
+	}
+
+	vc.symbolIDs = ids
+	vc.vectors = vecs
+	vc.loaded = true
+	return nil
+}
+
+// KNNSearchCached performs KNN search using the in-memory cache.
+func KNNSearchCached(
+	ctx context.Context,
+	db *store.DB,
+	cache *VectorCache,
+	query []float32,
+	topK int,
+	minSimilarity float32,
+) ([]SearchResult, error) {
+	if err := cache.load(ctx, db); err != nil {
+		return nil, err
+	}
+
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	h := &candidateHeap{}
+	heap.Init(h)
+
+	for i, vec := range cache.vectors {
+		sim := dotProduct(query, vec)
+		if sim >= minSimilarity {
+			heap.Push(h, candidate{cache.symbolIDs[i], sim})
+			if topK > 0 && h.Len() > topK {
+				heap.Pop(h)
+			}
+		}
+	}
+
+	results := topKFromHeap(h)
+	for i := range results {
+		results[i].RepoName = cache.repoName
+	}
+	return results, nil
+}
 
 // ErrDimensionMismatch is returned when stored embeddings have a different
 // dimension than the current embedder. The user must re-index with --force.
@@ -36,6 +162,47 @@ func UpsertEmbedding(ctx context.Context, db *store.DB, symbolID int64, repoName
 	`, symbolID, repoName, blob)
 	if err != nil {
 		return fmt.Errorf("vectorstore: upsert embedding for symbol %d: %w", symbolID, err)
+	}
+	return nil
+}
+
+// BatchUpsertEmbeddings stores or replaces embeddings for multiple symbols in a
+// single transaction. Each entry pairs a symbol ID with its L2-normalized vector.
+func BatchUpsertEmbeddings(ctx context.Context, db *store.DB, repoName string, symbolIDs []int64, vecs [][]float32) error {
+	if len(symbolIDs) != len(vecs) {
+		return fmt.Errorf("vectorstore: symbolIDs length %d != vecs length %d", len(symbolIDs), len(vecs))
+	}
+	if len(symbolIDs) == 0 {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("vectorstore: begin batch upsert tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO vec_symbols (symbol_id, repo_name, embedding)
+		VALUES (?, ?, ?)
+		ON CONFLICT(symbol_id) DO UPDATE SET
+			repo_name = excluded.repo_name,
+			embedding = excluded.embedding
+	`)
+	if err != nil {
+		return fmt.Errorf("vectorstore: prepare batch upsert: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, id := range symbolIDs {
+		blob := encodeFloat32s(vecs[i])
+		if _, err := stmt.ExecContext(ctx, id, repoName, blob); err != nil {
+			return fmt.Errorf("vectorstore: batch upsert embedding for symbol %d: %w", id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("vectorstore: commit batch upsert: %w", err)
 	}
 	return nil
 }
@@ -71,12 +238,9 @@ func KNNSearch(
 	}
 	defer rows.Close() //nolint:errcheck
 
-	type candidate struct {
-		symbolID int64
-		sim      float32
-	}
+	h := &candidateHeap{}
+	heap.Init(h)
 
-	var candidates []candidate
 	for rows.Next() {
 		var symbolID int64
 		var blob []byte
@@ -86,29 +250,19 @@ func KNNSearch(
 		vec := decodeFloat32s(blob)
 		sim := dotProduct(query, vec)
 		if sim >= minSimilarity {
-			candidates = append(candidates, candidate{symbolID, sim})
+			heap.Push(h, candidate{symbolID, sim})
+			if topK > 0 && h.Len() > topK {
+				heap.Pop(h)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("vectorstore: iterate embeddings: %w", err)
 	}
 
-	// Sort by similarity descending.
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].sim > candidates[j].sim
-	})
-
-	if topK > 0 && len(candidates) > topK {
-		candidates = candidates[:topK]
-	}
-
-	results := make([]SearchResult, len(candidates))
-	for i, c := range candidates {
-		results[i] = SearchResult{
-			SymbolID:   c.symbolID,
-			RepoName:   repoName,
-			Similarity: c.sim,
-		}
+	results := topKFromHeap(h)
+	for i := range results {
+		results[i].RepoName = repoName
 	}
 	return results, nil
 }

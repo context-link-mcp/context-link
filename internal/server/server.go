@@ -71,7 +71,9 @@ func (s *Server) registerTools() {
 	slog.Debug("registered tool", "name", "get_code_by_symbol")
 
 	// Phase 3: Semantic search tool (embedder may be nil if model not configured).
-	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout)
+	// Use in-memory vector cache for faster KNN queries.
+	vecCache := vectorstore.NewVectorCache(repoName)
+	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout, vecCache)
 	slog.Debug("registered tool", "name", "semantic_search_symbols")
 
 	// Phase 4: Memory persistence tools.

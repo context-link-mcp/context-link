@@ -131,6 +131,33 @@ func GetOrphanedMemoriesBySymbol(ctx context.Context, db *DB, lastKnownSymbol, l
 	return scanMemories(rows)
 }
 
+// GetAllOrphanedMemories returns all orphaned memories (symbol_id IS NULL),
+// grouped by "qualifiedName\x00filePath" key for fast lookup during relinking.
+func GetAllOrphanedMemories(ctx context.Context, db *DB) (map[string][]models.Memory, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, symbol_id, note, author, is_stale, stale_reason,
+		        last_known_symbol, last_known_file, created_at, updated_at
+		 FROM memories
+		 WHERE symbol_id IS NULL AND last_known_symbol IS NOT NULL AND last_known_file IS NOT NULL`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get all orphaned memories: %w", err)
+	}
+	defer rows.Close()
+
+	memories, err := scanMemories(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]models.Memory, len(memories))
+	for _, m := range memories {
+		key := m.LastKnownSymbol + "\x00" + m.LastKnownFile
+		result[key] = append(result[key], m)
+	}
+	return result, nil
+}
+
 // SnapshotAndMarkStale snapshots last_known_symbol/file into memories linked to
 // the given symbol and marks them stale. Called before deleting a symbol that has
 // changed or is being removed. Returns the number of memories actually updated.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -31,6 +30,13 @@ type IndexStats struct {
 	MemoriesRelinked    int           `json:"memories_relinked"`
 	Duration            time.Duration `json:"duration"`
 	Errors              int           `json:"errors"`
+}
+
+// fileResult holds the parsed output for a single file from Phase 3.
+type fileResult struct {
+	file    DiscoveredFile
+	symbols []models.Symbol
+	deps    []ExtractedDep
 }
 
 // Indexer orchestrates the full indexing pipeline: walk → parse → extract → store → embed.
@@ -67,16 +73,6 @@ func (idx *Indexer) WithForce(force bool) *Indexer {
 	return idx
 }
 
-// fileExtension returns the file extension including the dot.
-func fileExtension(path string) string {
-	return filepath.Ext(path)
-}
-
-// joinPath joins a root and relative path.
-func joinPath(root, rel string) string {
-	return filepath.Join(root, rel)
-}
-
 // IndexRepo indexes a repository at the given root path.
 func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*IndexStats, error) {
 	start := time.Now()
@@ -109,12 +105,6 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	)
 
 	// Phase 3: Parse and extract symbols in parallel.
-	type fileResult struct {
-		file    DiscoveredFile
-		symbols []models.Symbol
-		deps    []ExtractedDep
-	}
-
 	var (
 		mu      sync.Mutex
 		results []fileResult
@@ -164,8 +154,15 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		stats.DepsExtracted += len(r.deps)
 	}
 
-	// Phase 5: Resolve cross-file dependencies.
-	resolved, err := idx.resolveDependencies(ctx, repoName)
+	// Pre-compute symbol map for phases 5-7 (single query instead of 3×N per-file lookups).
+	symbolsByFile, err := store.GetSymbolsByRepo(ctx, idx.db, repoName)
+	if err != nil {
+		slog.Warn("indexer: failed to build symbol map, falling back to per-file lookups", "error", err)
+		symbolsByFile = make(map[string][]models.Symbol)
+	}
+
+	// Phase 5: Resolve cross-file dependencies using already-extracted deps.
+	resolved, err := idx.resolveDependencies(ctx, repoName, results, symbolsByFile)
 	if err != nil {
 		slog.Warn("indexer: dependency resolution partially failed", "error", err)
 	}
@@ -177,7 +174,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		for _, r := range results {
 			indexedPaths = append(indexedPaths, r.file.RelPath)
 		}
-		stats.EmbeddingsGenerated = idx.generateEmbeddings(ctx, repoName, indexedPaths)
+		stats.EmbeddingsGenerated = idx.generateEmbeddings(ctx, repoName, indexedPaths, symbolsByFile)
 	}
 
 	// Phase 7: Orphan recovery — re-link orphaned memories to newly inserted symbols.
@@ -185,7 +182,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	for _, r := range results {
 		indexedPathsForRelink = append(indexedPathsForRelink, r.file.RelPath)
 	}
-	relinked := idx.relinkOrphanedMemories(ctx, repoName, indexedPathsForRelink)
+	relinked := idx.relinkOrphanedMemories(ctx, repoName, indexedPathsForRelink, symbolsByFile)
 	stats.MemoriesRelinked = relinked
 
 	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged - stats.FilesDeleted
@@ -223,6 +220,12 @@ func (idx *Indexer) filterChangedFiles(
 		discovered[f.RelPath] = struct{}{}
 	}
 
+	// Batch-load all known file hashes (single query instead of N per-file lookups).
+	dbHashIndex, hashErr := store.GetFileHashIndex(ctx, idx.db, repoName)
+	if hashErr != nil {
+		return changed, unchanged, deleted, orphaned, fmt.Errorf("indexer: failed to load file hash index: %w", hashErr)
+	}
+
 	for _, f := range files {
 		if idx.force {
 			// Force mode: treat every file as changed.
@@ -230,14 +233,14 @@ func (idx *Indexer) filterChangedFiles(
 			continue
 		}
 
-		dbFile, dbErr := store.GetFileByPath(ctx, idx.db, repoName, f.RelPath)
-		if dbErr != nil {
+		dbHash, exists := dbHashIndex[f.RelPath]
+		if !exists {
 			// File not in DB — new file.
 			changed = append(changed, f)
 			continue
 		}
 
-		if dbFile.ContentHash == f.ContentHash {
+		if dbHash == f.ContentHash {
 			unchanged++
 			continue
 		}
@@ -248,24 +251,20 @@ func (idx *Indexer) filterChangedFiles(
 	}
 
 	// Detect files in DB that no longer exist on disk.
-	dbFiles, listErr := store.ListFiles(ctx, idx.db, repoName)
-	if listErr != nil {
-		return changed, unchanged, deleted, orphaned, fmt.Errorf("indexer: failed to list DB files: %w", listErr)
-	}
-	for _, dbFile := range dbFiles {
-		if _, found := discovered[dbFile.Path]; found {
+	for dbPath := range dbHashIndex {
+		if _, found := discovered[dbPath]; found {
 			continue
 		}
 		// File removed from disk — orphan its memories, then delete symbols + file record.
-		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, dbFile.Path, "symbol_deleted")
-		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbFile.Path); delErr != nil {
-			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbFile.Path, "error", delErr)
+		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, dbPath, "symbol_deleted")
+		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
+			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbPath, "error", delErr)
 		}
-		if delErr := store.DeleteFileByPath(ctx, idx.db, repoName, dbFile.Path); delErr != nil {
-			slog.Warn("indexer: failed to delete file record", "file", dbFile.Path, "error", delErr)
+		if delErr := store.DeleteFileByPath(ctx, idx.db, repoName, dbPath); delErr != nil {
+			slog.Warn("indexer: failed to delete file record", "file", dbPath, "error", delErr)
 		}
 		deleted++
-		slog.Info("indexer: removed deleted file", "file", dbFile.Path)
+		slog.Info("indexer: removed deleted file", "file", dbPath)
 	}
 
 	return changed, unchanged, deleted, orphaned, nil
@@ -369,72 +368,29 @@ func (idx *Indexer) storeFileResults(
 
 // resolveDependencies resolves raw call/extends/implements dependencies to
 // symbol IDs by matching names against the symbol registry in the database.
-func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string) (int, error) {
+// It uses the already-extracted deps from Phase 3 to avoid re-parsing files.
+func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, results []fileResult, symbolsByFile map[string][]models.Symbol) (int, error) {
 	// Build a name → ID lookup from all symbols in this repo.
 	symbolsByName, err := store.GetSymbolNameIndex(ctx, idx.db, repoName)
 	if err != nil {
 		return 0, fmt.Errorf("indexer: failed to build symbol name index: %w", err)
 	}
 
-	// Get all symbols to iterate their extracted dependencies.
-	allSymbols, err := idx.getAllSymbolsWithDeps(ctx, repoName, symbolsByName)
-	if err != nil {
-		return 0, err
-	}
-
-	resolved := 0
-	for _, dep := range allSymbols {
-		if err := store.InsertDependency(ctx, idx.db, &dep); err != nil {
-			slog.Warn("indexer: failed to insert resolved dependency", "error", err)
-			continue
-		}
-		resolved++
-	}
-
-	return resolved, nil
-}
-
-// getAllSymbolsWithDeps re-parses all indexed files to extract dependencies
-// and resolves them against the symbol name index.
-func (idx *Indexer) getAllSymbolsWithDeps(ctx context.Context, repoName string, symbolsByName map[string]int64) ([]models.Dependency, error) {
-	files, err := store.ListFiles(ctx, idx.db, repoName)
-	if err != nil {
-		return nil, fmt.Errorf("indexer: failed to list files: %w", err)
-	}
-
+	// Resolve deps using the already-extracted data from Phase 3.
 	var allDeps []models.Dependency
 
-	for _, f := range files {
-		adapter, ok := idx.registry.GetAdapter(fileExtension(f.Path))
-		if !ok {
+	for _, r := range results {
+		if len(r.deps) == 0 {
 			continue
 		}
 
-		source, err := os.ReadFile(joinPath(idx.repoRoot, f.Path))
-		if err != nil {
-			slog.Warn("indexer: failed to read file for dep resolution", "file", f.Path, "error", err)
+		// Get caller symbols from pre-computed map (no DB query).
+		callerSymbols := symbolsByFile[r.file.RelPath]
+		if len(callerSymbols) == 0 {
 			continue
 		}
 
-		pool := idx.pools.GetPool(adapter)
-		tree, err := pool.Parse(ctx, source)
-		if err != nil {
-			continue
-		}
-
-		deps, err := idx.extractor.ExtractDependencies(ctx, tree, source, adapter, f.Path)
-		if err != nil {
-			continue
-		}
-
-		// Get caller symbols in this file.
-		callerSymbols, err := store.GetSymbolsByFile(ctx, idx.db, repoName, f.Path)
-		if err != nil {
-			continue
-		}
-
-		// For each extracted dep, try to resolve callee and assign to first matching caller.
-		for _, d := range deps {
+		for _, d := range r.deps {
 			if d.Kind == "import" {
 				continue // imports don't map to symbol-to-symbol edges
 			}
@@ -442,32 +398,42 @@ func (idx *Indexer) getAllSymbolsWithDeps(ctx context.Context, repoName string, 
 			if !ok {
 				continue
 			}
-			// Assign to the first caller symbol in this file (conservative).
-			if len(callerSymbols) > 0 {
-				allDeps = append(allDeps, models.Dependency{
-					CallerID: callerSymbols[0].ID,
-					CalleeID: calleeID,
-					Kind:     d.Kind,
-				})
-			}
+			allDeps = append(allDeps, models.Dependency{
+				CallerID: callerSymbols[0].ID,
+				CalleeID: calleeID,
+				Kind:     d.Kind,
+			})
 		}
 	}
 
-	return allDeps, nil
+	// Batch insert all resolved dependencies in a single transaction.
+	if err := store.BatchInsertDependencies(ctx, idx.db, allDeps); err != nil {
+		return 0, fmt.Errorf("indexer: failed to batch insert dependencies: %w", err)
+	}
+
+	return len(allDeps), nil
 }
 
 // relinkOrphanedMemories scans newly indexed symbols and re-links any orphaned
 // memories that have matching last_known_symbol + last_known_file.
-func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string, filePaths []string) int {
+func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string, filePaths []string, symbolsByFile map[string][]models.Symbol) int {
+	// Batch-load all orphaned memories (single query instead of per-symbol lookups).
+	orphanMap, err := store.GetAllOrphanedMemories(ctx, idx.db)
+	if err != nil {
+		slog.Warn("indexer: failed to load orphaned memories", "error", err)
+		return 0
+	}
+	if len(orphanMap) == 0 {
+		return 0
+	}
+
 	relinked := 0
 	for _, path := range filePaths {
-		syms, err := store.GetSymbolsByFile(ctx, idx.db, repoName, path)
-		if err != nil {
-			continue
-		}
+		syms := symbolsByFile[path]
 		for _, s := range syms {
-			orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, idx.db, s.QualifiedName, s.FilePath)
-			if err != nil || len(orphans) == 0 {
+			key := s.QualifiedName + "\x00" + s.FilePath
+			orphans, ok := orphanMap[key]
+			if !ok || len(orphans) == 0 {
 				continue
 			}
 			for _, m := range orphans {
@@ -485,12 +451,11 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 
 // generateEmbeddings generates and stores vector embeddings for all symbols
 // belonging to the given file paths. Returns the count of embeddings stored.
-func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, filePaths []string) int {
+func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, filePaths []string, symbolsByFile map[string][]models.Symbol) int {
 	embedded := 0
 	for _, path := range filePaths {
-		syms, err := store.GetSymbolsByFile(ctx, idx.db, repoName, path)
-		if err != nil {
-			slog.Warn("indexer: failed to load symbols for embedding", "file", path, "error", err)
+		syms := symbolsByFile[path]
+		if len(syms) == 0 {
 			continue
 		}
 
@@ -512,13 +477,15 @@ func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, fil
 				continue
 			}
 
+			ids := make([]int64, len(batch))
 			for j, s := range batch {
-				if err := vectorstore.UpsertEmbedding(ctx, idx.db, s.ID, repoName, vecs[j]); err != nil {
-					slog.Warn("indexer: failed to upsert embedding", "symbol", s.QualifiedName, "error", err)
-					continue
-				}
-				embedded++
+				ids[j] = s.ID
 			}
+			if err := vectorstore.BatchUpsertEmbeddings(ctx, idx.db, repoName, ids, vecs); err != nil {
+				slog.Warn("indexer: failed to batch upsert embeddings", "file", path, "error", err)
+				continue
+			}
+			embedded += len(batch)
 		}
 
 		if embedded > 0 && embedded%100 == 0 {

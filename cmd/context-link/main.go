@@ -123,13 +123,15 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		cfg.ProjectRoot = flagProjectRoot
 	}
 
-	// Determine the path to index.
+	// Determine the path to index (always resolve to absolute so that
+	// filepath.Base returns a real directory name, not ".").
 	indexPath := cfg.ProjectRoot
 	if len(args) > 0 {
-		indexPath, err = filepath.Abs(args[0])
-		if err != nil {
-			return fmt.Errorf("failed to resolve path %s: %w", args[0], err)
-		}
+		indexPath = args[0]
+	}
+	indexPath, err = filepath.Abs(indexPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve index path %s: %w", indexPath, err)
 	}
 
 	// Determine repo name.
