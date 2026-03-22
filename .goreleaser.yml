@@ -84,13 +84,5 @@ brews:
     install: |
       bin.install "context-link"
 
-chocolateys:
-  - name: context-link
-    owners: context-link-mcp
-    title: context-link
-    authors: context-link-mcp
-    project_url: "https://github.com/context-link-mcp/context-link"
-    license_url: "https://github.com/context-link-mcp/context-link/blob/master/LICENSE"
-    description: "Local MCP Context Gateway for AI Coding Agents"
-    tags: "mcp ai coding-agent code-context tree-sitter"
-    api_key: "{{ .Env.CHOCOLATEY_API_KEY }}"
+# TODO: Chocolatey publishing requires a Windows runner with choco installed.
+# Add a separate workflow step on windows-latest to push the .nupkg after release.
