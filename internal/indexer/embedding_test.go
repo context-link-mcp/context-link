@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/context-link/context-link/internal/indexer/adapters"
-	"github.com/context-link/context-link/internal/store"
-	"github.com/context-link/context-link/internal/vectorstore"
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/internal/indexer/adapters"
+	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/vectorstore"
+	"github.com/context-link-mcp/context-link/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

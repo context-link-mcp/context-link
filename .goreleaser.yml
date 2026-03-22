@@ -44,9 +44,10 @@ changelog:
 brews:
   - name: context-link
     repository:
-      owner: context-link
+      owner: context-link-mcp
       name: homebrew-tap
-    homepage: "https://github.com/context-link/context-link"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/context-link-mcp/context-link"
     description: "Local MCP Context Gateway for AI Coding Agents"
     license: "Apache-2.0"
     install: |
@@ -54,10 +55,11 @@ brews:
 
 chocolateys:
   - name: context-link
-    owners: context-link
+    owners: context-link-mcp
     title: context-link
-    authors: context-link
-    project_url: "https://github.com/context-link/context-link"
-    license_url: "https://github.com/context-link/context-link/blob/master/LICENSE"
+    authors: context-link-mcp
+    project_url: "https://github.com/context-link-mcp/context-link"
+    license_url: "https://github.com/context-link-mcp/context-link/blob/master/LICENSE"
     description: "Local MCP Context Gateway for AI Coding Agents"
     tags: "mcp ai coding-agent code-context tree-sitter"
+    api_key: "{{ .Env.CHOCOLATEY_API_KEY }}"

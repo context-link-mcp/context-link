@@ -4,9 +4,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/context-link/context-link/internal/config"
-	"github.com/context-link/context-link/internal/server"
-	"github.com/context-link/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/config"
+	"github.com/context-link-mcp/context-link/internal/server"
+	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/stretchr/testify/require"
 )
 

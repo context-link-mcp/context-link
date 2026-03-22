@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // ErrFileNotFound is returned when a file record is not found.

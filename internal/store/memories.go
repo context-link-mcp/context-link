@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // ErrMemoryNotFound is returned when a memory record is not found.

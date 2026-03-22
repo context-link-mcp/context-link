@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

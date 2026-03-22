@@ -32,7 +32,7 @@ Injects developer-written or agent-written memory notes linked to specific AST n
 cmd/context-link/               # CLI entry point (cobra): serve, index, version
 internal/
   server/
-    server.go                   # MCP server setup, tool registration, stdio transport
+    server.go                   # MCP server setup, config-driven tool registry, stdio transport
   indexer/
     language.go                 # LanguageAdapter interface + LanguageRegistry (RWMutex)
     walker.go                   # File walker (.gitignore, SHA-256 hashing, 1MB limit)
@@ -75,6 +75,10 @@ internal/
     get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps + memories, depth 0-3)
     semantic_search.go          # semantic_search_symbols tool (embed query → KNN → join + filter + memory_count)
     memory.go                   # save_symbol_memory, get_symbol_memories, purge_stale_memories tools
+    skeleton.go                 # get_file_skeleton tool (structural outline, signatures only)
+    usages.go                   # get_symbol_usages tool (reverse dependency lookup — who calls this?)
+    calltree.go                 # get_call_tree tool (BFS call hierarchy, callees or callers, depth 1-3)
+    timeout.go                  # WithTimeout middleware for tool handlers
   config/
     config.go                   # Viper-based config loading (.context-link.yaml, env vars, model paths)
 pkg/models/
@@ -94,8 +98,13 @@ Agent Query
     v
 semantic_search_symbols ──> embed query (Model2Vec/ONNX) ──> Go KNN over vec_symbols ──> [symbol names]
     |
+    ├──> get_file_skeleton ──> structural outline (signatures only, no code bodies)
+    |
     v
 get_code_by_symbol ──> SQLite BFS dependency graph ──> [code + deps]
+    |
+    ├──> get_symbol_usages ──> reverse dependency lookup ──> [all callers]
+    ├──> get_call_tree ──> BFS call hierarchy (callees/callers, depth 1-3)
     |
     v
 Agent Task Completion
@@ -160,6 +169,12 @@ Dependencies are resolved via BFS traversal with configurable max depth (0-3):
 
 The resolver matches extracted call/extends/implements references against the symbol name index in the database.
 
+## Tool Registry
+
+The server uses a config-driven tool registry (`server.go:registerTools`). Each tool is a `toolRegistration{name, register}` pair. If `config.Tools` is non-empty, only listed tools are registered — this controls prompt token budget by hiding unused tools from agents. The memory group (`save_symbol_memory`, `get_symbol_memories`, `purge_stale_memories`) is registered as a block via the `memory` key.
+
+Version is injected at build time via `-X main.version=<tag>` ldflags, passed through `server.New()` to the ping tool.
+
 ## Design Principles
 
 1. **Zero external network calls** — Fully air-gapped operation
@@ -169,6 +184,7 @@ The resolver matches extracted call/extends/implements references against the sy
 5. **Memory durability** — Orphaned memories survive symbol renames via `ON DELETE SET NULL`
 6. **MCP-first** — All capabilities exposed as structured MCP tools with JSON responses and timing metadata
 7. **Symbol deduplication** — Overlapping Tree-sitter query patterns are deduplicated by (qualified_name, start_line)
+8. **Config-driven tool registry** — Selectively enable/disable tools via config to control agent prompt token budget
 
 ## Performance Targets
 

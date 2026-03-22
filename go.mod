@@ -1,4 +1,4 @@
-module github.com/context-link/context-link
+module github.com/context-link-mcp/context-link
 
 go 1.24.2
 

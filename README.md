@@ -94,8 +94,11 @@ sudo dnf install gcc gcc-c++ make
 # Development build
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 
-# Release build (stripped binary)
-CGO_ENABLED=1 go build -ldflags="-s -w" -o ./bin/context-link ./cmd/context-link
+# Release build (stripped binary, with version)
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.2.0" -o ./bin/context-link ./cmd/context-link
+
+# Or use the Makefile (auto-detects version from git tags)
+make build
 ```
 
 On Windows, the output binary will be `context-link.exe`.
@@ -127,7 +130,7 @@ CGO_ENABLED=1 go test ./internal/indexer/ -args -update-golden
 ### Step 1: Build the Binary
 
 ```bash
-git clone https://github.com/context-link/context-link.git
+git clone https://github.com/context-link-mcp/context-link.git
 cd context-link
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 ```
@@ -194,9 +197,11 @@ For maximum token efficiency:
 
 1. Call `read_architecture_rules` at the start of a session.
 2. Use `semantic_search_symbols` to discover relevant symbols by intent — do not read files directly.
-3. Use `get_code_by_symbol` to retrieve only the code you need, with dependencies.
-4. Check `memories` in the response for prior findings about the symbol.
-5. After completing work, call `save_symbol_memory` to persist findings for future sessions.
+3. Use `get_file_skeleton` to understand a file's structure before diving in.
+4. Use `get_code_by_symbol` to retrieve only the code you need, with dependencies.
+5. Use `get_symbol_usages` and `get_call_tree` to explore call hierarchies and reverse dependencies.
+6. Check `memories` in the response for prior findings about the symbol.
+7. After completing work, call `save_symbol_memory` to persist findings for future sessions.
 
 The `explore_codebase` MCP prompt encodes this protocol and can be invoked directly in supported clients.
 
@@ -231,6 +236,7 @@ The `explore_codebase` MCP prompt encodes this protocol and can be invoked direc
 | `--model-path` | _(built-in)_ | Path to custom ONNX model — overrides built-in Model2Vec |
 | `--vocab-path` | _(built-in)_ | Path to `vocab.txt` for the ONNX tokenizer |
 | `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library |
+| `--tools` | _(all)_ | Comma-separated list of tools to enable (e.g. `ping,get_code_by_symbol`) |
 
 ### Configuration File
 
@@ -244,6 +250,18 @@ log_level: info
 # model_path: /path/to/all-MiniLM-L6-v2.onnx
 # vocab_path: /path/to/vocab.txt
 # ort_lib_path: ""
+
+# Control which MCP tools are exposed (default: all).
+# Use this to reduce prompt token budget by disabling unused tools.
+# tools:
+#   - ping
+#   - semantic_search_symbols
+#   - get_code_by_symbol
+#   - get_file_skeleton
+#   - get_symbol_usages
+#   - get_call_tree
+#   - read_architecture_rules
+#   - memory  # registers save_symbol_memory, get_symbol_memories, purge_stale_memories
 ```
 
 Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_LINK_LOG_LEVEL=debug`).
@@ -368,6 +386,66 @@ Deletes stale memories. Use `orphaned_only=true` to only delete memories with no
 |-------|------|----------|---------|-------------|
 | `orphaned_only` | boolean | no | `false` | Only delete orphaned memories |
 
+### `get_file_skeleton`
+
+Returns a structural outline of a file — symbol names, kinds, and signatures (first line of code block only). No full code bodies. Use to understand a file's structure before extracting specific symbols.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `file_path` | string | yes | — | Relative file path (e.g. `internal/store/symbols.go`) |
+
+```json
+{
+  "file_path": "internal/store/symbols.go",
+  "symbols": [
+    { "name": "GetSymbolByName", "kind": "function", "signature": "func GetSymbolByName(ctx context.Context, db *DB, repoName, name string) (*models.Symbol, error) {", "start_line": 42 }
+  ],
+  "symbol_count": 15,
+  "metadata": { "timing_ms": 2 }
+}
+```
+
+### `get_symbol_usages`
+
+Reverse dependency lookup — finds all callers/references of a symbol.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `symbol_name` | string | yes | — | Name or qualified name of the symbol |
+
+```json
+{
+  "symbol": { "name": "hashFile", "qualified_name": "walker.hashFile", "kind": "function", "file_path": "internal/indexer/walker.go" },
+  "usages": [
+    { "caller_name": "Walk", "caller_qualified_name": "Walker.Walk", "caller_kind": "method", "file_path": "internal/indexer/walker.go", "start_line": 55, "dep_kind": "call" }
+  ],
+  "usage_count": 3,
+  "metadata": { "timing_ms": 4 }
+}
+```
+
+### `get_call_tree`
+
+Traverses the dependency graph to show a call hierarchy. Use `direction='callees'` to see what a symbol calls, or `direction='callers'` to see what calls it.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `symbol_name` | string | yes | — | Root symbol name or qualified name |
+| `direction` | string | no | `callees` | `callees` or `callers` |
+| `depth` | number | no | `1` | Max traversal depth (max `3`) |
+
+```json
+{
+  "root": { "name": "Walk", "qualified_name": "Walker.Walk", "kind": "method", "file_path": "internal/indexer/walker.go" },
+  "edges": [
+    { "depth": 1, "name": "hashFile", "qualified_name": "walker.hashFile", "kind": "function", "file_path": "internal/indexer/walker.go", "start_line": 120, "dep_kind": "call" }
+  ],
+  "edge_count": 5,
+  "direction": "callees",
+  "metadata": { "timing_ms": 3 }
+}
+```
+
 ---
 
 ## Adding a New Language
@@ -388,7 +466,7 @@ Measured after Phase 5 optimizations (batch DB operations, eliminated double-par
 
 | Repository | Language | Files | Symbols | Embeddings | Index Time | DB Size |
 |------------|----------|-------|---------|------------|------------|---------|
-| [context-link](https://github.com/context-link/context-link) (self) | Go | 59 | 539 | 528 | 1.05s | 1.5 MB |
+| [context-link](https://github.com/context-link-mcp/context-link) (self) | Go | 59 | 539 | 528 | 1.05s | 1.5 MB |
 | [echo](https://github.com/labstack/echo) | Go | 90 | 1,901 | 1,576 | 1.85s | 3.1 MB |
 | [gin](https://github.com/gin-gonic/gin) | Go | 99 | 1,892 | 1,722 | 3.54s | 2.4 MB |
 | [tRPC](https://github.com/trpc/trpc) | TypeScript | 381 | 772 | 767 | 6.82s | — |
@@ -478,4 +556,4 @@ For large files the savings are dramatic (86%+ reduction for a 3,200-token file)
 
 ## License
 
-TBD
+Apache-2.0 — see [LICENSE](LICENSE).

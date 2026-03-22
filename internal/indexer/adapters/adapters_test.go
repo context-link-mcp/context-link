@@ -3,7 +3,7 @@ package adapters_test
 import (
 	"testing"
 
-	"github.com/context-link/context-link/internal/indexer/adapters"
+	"github.com/context-link-mcp/context-link/internal/indexer/adapters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

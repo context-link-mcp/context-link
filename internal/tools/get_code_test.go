@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/context-link/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/store"
 )
 
 // openToolTestDB opens a migrated temp DB for tool handler tests.

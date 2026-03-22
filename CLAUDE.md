@@ -21,8 +21,11 @@ context-link is a local MCP server (Go) that serves structured code context to A
 ## Build & Test
 
 ```bash
-# Build (CGo required for Tree-sitter)
-CGO_ENABLED=1 go build -o ./bin/context-link.exe ./cmd/context-link
+# Build (CGo required for Tree-sitter) — version auto-detected from git tags
+make build
+
+# Or manual build with version injection
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.2.0" -o ./bin/context-link.exe ./cmd/context-link
 
 # Run all tests
 CGO_ENABLED=1 go test ./... -count=1
@@ -91,7 +94,7 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 
 ```
 cmd/context-link/main.go          Entry point, CLI (cobra), adapter registration, embedder wiring
-internal/server/server.go         MCP server setup, tool registration
+internal/server/server.go         MCP server setup, config-driven tool registry
 internal/indexer/indexer.go        Pipeline orchestrator: walk → parse → extract → store → resolve → embed
 internal/indexer/language.go       LanguageAdapter interface + registry
 internal/indexer/extractor.go      Tree-sitter query-based symbol/dep extraction
@@ -104,6 +107,9 @@ internal/vectorstore/vecstore.go   Embedding CRUD, KNN search, dimension validat
 internal/tools/get_code.go         get_code_by_symbol MCP tool handler
 internal/tools/semantic_search.go  semantic_search_symbols MCP tool handler
 internal/tools/memory.go           save/get/purge memory MCP tool handlers
+internal/tools/skeleton.go         get_file_skeleton tool (structural outline, signatures only)
+internal/tools/usages.go           get_symbol_usages tool (reverse dependency lookup)
+internal/tools/calltree.go         get_call_tree tool (BFS call hierarchy, callees/callers)
 internal/tools/ping.go             Health-check tool
 internal/tools/architecture.go     read_architecture_rules tool
 ```
@@ -122,4 +128,4 @@ internal/tools/architecture.go     read_architecture_rules tool
 - **Phase 2 (Indexer):** Complete — Tree-sitter parsing, symbol graph, BFS deps, get_code_by_symbol, 3 language adapters, 65 tests passing
 - **Phase 3 (Semantic Search):** Complete — Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config), optional ONNX override, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
-- **Phase 5 (Polish):** In progress — docs, tests, timeout wiring done; runtime testing pending
+- **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license

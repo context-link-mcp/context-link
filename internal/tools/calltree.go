@@ -9,8 +9,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/context-link/context-link/internal/store"
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // RegisterCallTreeTool registers the get_call_tree MCP tool.

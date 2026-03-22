@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/context-link/context-link/internal/indexer/adapters"
-	"github.com/context-link/context-link/internal/store"
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/internal/indexer/adapters"
+	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // buildTestIndexer constructs a ready-to-use Indexer for integration tests.

@@ -14,12 +14,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/context-link/context-link/internal/config"
-	"github.com/context-link/context-link/internal/indexer"
-	"github.com/context-link/context-link/internal/indexer/adapters"
-	"github.com/context-link/context-link/internal/server"
-	"github.com/context-link/context-link/internal/store"
-	"github.com/context-link/context-link/internal/vectorstore"
+	"github.com/context-link-mcp/context-link/internal/config"
+	"github.com/context-link-mcp/context-link/internal/indexer"
+	"github.com/context-link-mcp/context-link/internal/indexer/adapters"
+	"github.com/context-link-mcp/context-link/internal/server"
+	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/vectorstore"
 )
 
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z".

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // ErrSymbolNotFound is returned when a symbol record is not found.

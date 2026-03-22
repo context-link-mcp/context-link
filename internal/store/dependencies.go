@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // InsertDependency inserts a single dependency edge. Ignores duplicates.

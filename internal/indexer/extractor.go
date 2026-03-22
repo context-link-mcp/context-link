@@ -9,7 +9,7 @@ import (
 
 	sitter "github.com/smacker/go-tree-sitter"
 
-	"github.com/context-link/context-link/pkg/models"
+	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
 // safeNodeContent extracts node content with bounds checking to prevent

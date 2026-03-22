@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/context-link/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/store"
 )
 
 // candidateHeap is a min-heap of candidates for top-k selection.

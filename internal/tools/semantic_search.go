@@ -10,8 +10,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/context-link/context-link/internal/store"
-	"github.com/context-link/context-link/internal/vectorstore"
+	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/vectorstore"
 )
 
 // SemanticSearchResult is one item returned by the semantic_search_symbols tool.
