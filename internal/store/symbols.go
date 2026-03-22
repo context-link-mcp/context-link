@@ -166,21 +166,30 @@ func GetSymbolNameIndex(ctx context.Context, db *DB, repoName string) (map[strin
 	return index, rows.Err()
 }
 
+// ResolveSymbol looks up a symbol by name using a cascading strategy:
+// exact name match → qualified name match → fuzzy search.
+// Returns ErrSymbolNotFound if no match is found.
+func ResolveSymbol(ctx context.Context, db *DB, repoName, name string) (*models.Symbol, error) {
+	sym, err := GetSymbolByName(ctx, db, repoName, name)
+	if err != nil {
+		sym, err = GetSymbolByQualifiedName(ctx, db, repoName, name)
+	}
+	if err != nil {
+		results, searchErr := SearchSymbolsByName(ctx, db, repoName, name, 1)
+		if searchErr != nil || len(results) == 0 {
+			return nil, ErrSymbolNotFound
+		}
+		sym = &results[0]
+	}
+	return sym, nil
+}
+
 // GetSymbolWithDependencies retrieves a symbol and its direct dependencies
 // (1-hop). Returns the symbol, its dependencies, and their import statements.
 func GetSymbolWithDependencies(ctx context.Context, db *DB, repoName, symbolName string, depth int) (*models.Symbol, []models.Symbol, error) {
-	// Try exact match first, then qualified name, then fuzzy.
-	sym, err := GetSymbolByName(ctx, db, repoName, symbolName)
+	sym, err := ResolveSymbol(ctx, db, repoName, symbolName)
 	if err != nil {
-		sym, err = GetSymbolByQualifiedName(ctx, db, repoName, symbolName)
-	}
-	if err != nil {
-		// Try fuzzy search.
-		results, searchErr := SearchSymbolsByName(ctx, db, repoName, symbolName, 1)
-		if searchErr != nil || len(results) == 0 {
-			return nil, nil, ErrSymbolNotFound
-		}
-		sym = &results[0]
+		return nil, nil, err
 	}
 
 	if depth <= 0 {
@@ -347,6 +356,96 @@ func GetSymbolsByRepo(ctx context.Context, db *DB, repoName string) (map[string]
 		result[s.FilePath] = append(result[s.FilePath], s)
 	}
 	return result, rows.Err()
+}
+
+// CallTreeEdge represents one edge in a call tree traversal.
+type CallTreeEdge struct {
+	Depth          int
+	Symbol         models.Symbol
+	DependencyKind string
+}
+
+// GetCallTree performs BFS traversal of the dependency graph from a root symbol.
+// direction must be "callees" (forward: what does this call?) or "callers" (reverse: what calls this?).
+// Returns a flat list of edges with depth levels. Hard-capped at 100 edges.
+func GetCallTree(ctx context.Context, db *DB, symbolID int64, direction string, maxDepth int) ([]CallTreeEdge, error) {
+	if maxDepth <= 0 {
+		return nil, nil
+	}
+	if maxDepth > 3 {
+		maxDepth = 3
+	}
+
+	// Direction determines which column is the frontier key and which is the target.
+	var frontierCol, targetCol string
+	if direction == "callers" {
+		frontierCol = "callee_id"
+		targetCol = "caller_id"
+	} else {
+		frontierCol = "caller_id"
+		targetCol = "callee_id"
+	}
+
+	const maxEdges = 100
+	seen := map[int64]bool{symbolID: true}
+	var result []CallTreeEdge
+	frontier := []int64{symbolID}
+
+	for depth := 1; depth <= maxDepth && len(frontier) > 0 && len(result) < maxEdges; depth++ {
+		placeholders := make([]string, len(frontier))
+		args := make([]any, len(frontier))
+		for i, id := range frontier {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+
+		query := fmt.Sprintf(
+			`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+			        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at,
+			        d.kind
+			 FROM dependencies d
+			 JOIN symbols s ON s.id = d.%s
+			 WHERE d.%s IN (%s)`,
+			targetCol, frontierCol, strings.Join(placeholders, ","),
+		)
+
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: failed to get call tree edges: %w", err)
+		}
+
+		var nextFrontier []int64
+		for rows.Next() {
+			var s models.Symbol
+			var depKind string
+			if err := rows.Scan(
+				&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+				&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+				&depKind,
+			); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store: failed to scan call tree row: %w", err)
+			}
+			if seen[s.ID] {
+				continue
+			}
+			seen[s.ID] = true
+			result = append(result, CallTreeEdge{
+				Depth:          depth,
+				Symbol:         s,
+				DependencyKind: depKind,
+			})
+			nextFrontier = append(nextFrontier, s.ID)
+			if len(result) >= maxEdges {
+				break
+			}
+		}
+		rows.Close()
+
+		frontier = nextFrontier
+	}
+
+	return result, nil
 }
 
 // CountSymbols returns the total number of symbols for a repo.

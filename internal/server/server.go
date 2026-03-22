@@ -76,6 +76,16 @@ func (s *Server) registerTools() {
 	tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout, vecCache)
 	slog.Debug("registered tool", "name", "semantic_search_symbols")
 
+	// Structural exploration tools.
+	tools.RegisterSkeletonTool(s.mcp, s.db, repoName, timeout)
+	slog.Debug("registered tool", "name", "get_file_skeleton")
+
+	tools.RegisterUsagesTool(s.mcp, s.db, repoName, timeout)
+	slog.Debug("registered tool", "name", "get_symbol_usages")
+
+	tools.RegisterCallTreeTool(s.mcp, s.db, repoName, timeout)
+	slog.Debug("registered tool", "name", "get_call_tree")
+
 	// Phase 4: Memory persistence tools.
 	tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout)
 	slog.Debug("registered tools", "names", "save_symbol_memory,get_symbol_memories,purge_stale_memories")
@@ -99,10 +109,13 @@ func (s *Server) registerPrompts() {
 					mcp.RoleUser,
 					mcp.NewTextContent(`CONTEXT PROTOCOL: Before reading any file, you MUST:
 1. Use semantic_search_symbols to discover relevant symbols by intent.
-2. Use get_code_by_symbol to extract only the needed code and dependencies.
-3. Check returned memories for prior insights about the code.
-4. ONLY use direct file read as a last resort if the above tools fail.
-5. After completing a task, use save_symbol_memory to record findings.
+2. Use get_file_skeleton to understand a file's structure (signatures only, no code bodies).
+3. Use get_code_by_symbol to extract only the needed code and dependencies.
+4. Use get_symbol_usages to find all callers of a symbol.
+5. Use get_call_tree to explore call hierarchies (callees or callers).
+6. Check returned memories for prior insights about the code.
+7. ONLY use direct file read as a last resort if the above tools fail.
+8. After completing a task, use save_symbol_memory to record findings.
 
 This protocol reduces token consumption by >80% compared to reading files directly.`),
 				),

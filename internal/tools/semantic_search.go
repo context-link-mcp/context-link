@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -19,9 +20,8 @@ type SemanticSearchResult struct {
 	QualifiedName string  `json:"qualified_name"`
 	Kind          string  `json:"kind"`
 	FilePath      string  `json:"file_path"`
-	Language      string  `json:"language"`
 	Similarity    float32 `json:"similarity_score"`
-	MemoryCount   int     `json:"memory_count"`
+	MemoryCount   int     `json:"memory_count,omitempty"`
 }
 
 // semanticSearchResponse is the full JSON response from semantic_search_symbols.
@@ -158,8 +158,7 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 					QualifiedName: sym.QualifiedName,
 					Kind:          sym.Kind,
 					FilePath:      sym.FilePath,
-					Language:      sym.Language,
-					Similarity:    hit.Similarity,
+					Similarity:    float32(math.Round(float64(hit.Similarity)*100) / 100),
 				},
 			})
 		}
