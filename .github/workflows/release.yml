@@ -11,7 +11,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/goreleaser/goreleaser-cross:v1.24.2
+      image: ghcr.io/goreleaser/goreleaser-cross:v1.25.8
     steps:
       - uses: actions/checkout@v4
         with:
