@@ -22,7 +22,8 @@ import (
 	"github.com/context-link/context-link/internal/vectorstore"
 )
 
-const version = "0.1.0"
+// version is set at build time via -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
 
 // CLI flag values — populated by cobra before command functions run.
 var (
@@ -35,6 +36,9 @@ var (
 	flagModelPath  string
 	flagVocabPath  string
 	flagORTLibPath string
+
+	// Tool registry: comma-separated list of tools to enable.
+	flagTools []string
 )
 
 func main() {
@@ -102,6 +106,9 @@ func init() {
 		cmd.Flags().StringVar(&flagVocabPath, "vocab-path", "", "path to vocab.txt for the ONNX model tokenizer")
 		cmd.Flags().StringVar(&flagORTLibPath, "ort-lib-path", "", "path to OnnxRuntime shared library (default: system search path)")
 	}
+
+	// Tool registry flag (serve only).
+	serveCmd.Flags().StringSliceVar(&flagTools, "tools", nil, "comma-separated list of tools to enable (default: all)")
 
 	rootCmd.AddCommand(serveCmd, indexCmd, versionCmd)
 }
@@ -304,8 +311,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 			"error", err)
 	}
 
+	// Apply tool filter from CLI flag.
+	if len(flagTools) > 0 {
+		cfg.Tools = flagTools
+	}
+
 	// Build MCP server with all tools registered.
-	srv := server.New(cfg, db, embedder)
+	srv := server.New(cfg, db, embedder, version)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

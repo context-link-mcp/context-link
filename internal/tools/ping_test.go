@@ -10,7 +10,7 @@ import (
 func TestPingHandler(t *testing.T) {
 	t.Parallel()
 
-	handler := pingHandler()
+	handler := pingHandler("test")
 
 	result, err := callHandler(t, handler)
 	require.NoError(t, err)

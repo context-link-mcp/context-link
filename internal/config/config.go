@@ -31,6 +31,11 @@ type Config struct {
 	// ORTLibPath is the path to the OnnxRuntime shared library.
 	// Leave empty to use the system default library search path.
 	ORTLibPath string `mapstructure:"ort_lib_path"`
+
+	// Tools lists which MCP tools to expose. If empty, all tools are enabled.
+	// Use this to control prompt token budget by disabling unused tools.
+	// Example: ["ping", "semantic_search_symbols", "get_code_by_symbol"]
+	Tools []string `mapstructure:"tools"`
 }
 
 // Load reads the configuration from the config file and environment variables.

@@ -1,0 +1,63 @@
+version: 2
+project_name: context-link
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: context-link
+    main: ./cmd/context-link
+    binary: context-link
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+
+brews:
+  - name: context-link
+    repository:
+      owner: context-link
+      name: homebrew-tap
+    homepage: "https://github.com/context-link/context-link"
+    description: "Local MCP Context Gateway for AI Coding Agents"
+    license: "Apache-2.0"
+    install: |
+      bin.install "context-link"
+
+chocolateys:
+  - name: context-link
+    owners: context-link
+    title: context-link
+    authors: context-link
+    project_url: "https://github.com/context-link/context-link"
+    license_url: "https://github.com/context-link/context-link/blob/master/LICENSE"
+    description: "Local MCP Context Gateway for AI Coding Agents"
+    tags: "mcp ai coding-agent code-context tree-sitter"
