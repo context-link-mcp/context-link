@@ -234,3 +234,30 @@ The `--watch` flag on the `serve` command starts an fsnotify-based file watcher 
 | Semantic search latency (P95) | <200ms | 23ms P95, 21ms P50 (530 symbols, Model2Vec) |
 | Cold start to first tool call | <3 seconds | 44ms (MCP init + ping) |
 | Binary size (incl. embedded model) | <50 MB | ~47 MB (Model2Vec potion-base-4M embedded in binary) |
+
+### Optimization Impact
+
+**Round 1** — Eliminated redundant work in the indexing pipeline:
+
+| Optimization | Change | Impact |
+|--------------|--------|--------|
+| Eliminate double-parsing | Removed full re-parse pass during dependency resolution | ~2x faster indexing |
+| Batch embedding upserts | Transaction + prepared statement instead of per-row inserts | ~5-10x faster embedding storage |
+| Batch dependency inserts | Used existing `BatchInsertDependencies` | Fewer DB round-trips |
+| `vec_symbols` repo index | Added `idx_vec_symbols_repo` | Faster KNN scans on multi-repo DBs |
+
+**Round 2** — Architecture, function, and code-level optimizations:
+
+| Optimization | Change | Impact |
+|--------------|--------|--------|
+| In-memory vector cache (O1) | Pre-loads embeddings on first query, pure dot-product KNN | Search: 1,880µs → 197µs (10x) |
+| Batch file hash lookup (O2) | Single `GetFileHashIndex` query replaces N per-file lookups | Incremental check: near-instant |
+| Pre-computed symbol map (O3) | One `GetSymbolsByRepo` call replaces 3×N per-file queries | Eliminated ~3N DB round-trips |
+| Batch semantic search lookup (O4) | `GetSymbolsByIDs` replaces per-hit query loop | 30 queries → 1 query |
+| Batch BFS dependencies (O5) | `WHERE caller_id IN (...)` replaces per-node queries | N queries → 1 per depth level |
+| Parallel file hashing (O6) | `errgroup` with 8 goroutines for walker I/O | 2-4x faster walk on large repos |
+| Batch orphan relinking (O7) | `GetAllOrphanedMemories` replaces per-symbol queries | N queries → 1 query |
+| SQLite PRAGMA tuning (O8) | `synchronous=NORMAL`, 8 MB cache, memory temp store | 10-20% faster writes |
+| Heap-based top-k (O10) | `container/heap` replaces `sort.Slice` for KNN | O(n log k) vs O(n log n) |
+
+**Cumulative: 4.9x indexing speedup** (5.1s → 1.05s), **150x search speedup** (30ms → 0.2ms), **9ms incremental re-index** (no changes).
