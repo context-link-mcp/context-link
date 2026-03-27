@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/context-link-mcp/context-link/internal/config"
+	"github.com/context-link-mcp/context-link/internal/indexer"
 	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/context-link-mcp/context-link/internal/tools"
 	"github.com/context-link-mcp/context-link/internal/vectorstore"
@@ -27,12 +28,14 @@ type Server struct {
 	cfg      *config.Config
 	db       *store.DB
 	embedder vectorstore.Embedder
+	indexer  *indexer.Indexer
 	version  string
 }
 
 // New creates and configures a new Server with all registered tools and prompts.
 // embedder may be nil — semantic_search_symbols will return a "not available" error.
-func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder, version string) *Server {
+// indexer may be nil — reindex_project will not be registered.
+func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder, idx *indexer.Indexer, version string) *Server {
 	mcpServer := server.NewMCPServer(
 		serverName,
 		version,
@@ -44,6 +47,7 @@ func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder, versio
 		cfg:      cfg,
 		db:       db,
 		embedder: embedder,
+		indexer:  idx,
 		version:  version,
 	}
 
@@ -70,6 +74,13 @@ func (s *Server) registerTools() {
 
 	registry := []toolRegistration{
 		{"ping", func() { tools.RegisterPingTool(s.mcp, s.version) }},
+		{"reindex_project", func() {
+			if s.indexer != nil {
+				tools.RegisterReindexTool(s.mcp, s.indexer, repoName, s.cfg.ProjectRoot, tracker)
+			}
+		}},
+		{"get_modified_symbols", func() { tools.RegisterModifiedSymbolsTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
+		{"get_tests_for_symbol", func() { tools.RegisterTestDiscoveryTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"read_architecture_rules", func() { tools.RegisterArchitectureTool(s.mcp, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"get_code_by_symbol", func() { tools.RegisterGetCodeTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"semantic_search_symbols", func() {

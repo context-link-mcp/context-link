@@ -460,21 +460,36 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 // embeddings stored.
 func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, filePaths []string, symbolsByFile map[string][]models.Symbol) int {
 	embedded := 0
+
+	// Batch-fetch callee names for all symbols across all files.
+	// This single query is much faster than per-symbol queries.
+	var allSymbolIDs []int64
+	for _, path := range filePaths {
+		for _, s := range symbolsByFile[path] {
+			allSymbolIDs = append(allSymbolIDs, s.ID)
+		}
+	}
+	calleeMap, err := store.GetCalleeNamesForSymbols(ctx, idx.db, allSymbolIDs)
+	if err != nil {
+		slog.Warn("indexer: failed to fetch callee names for keyword enrichment", "error", err)
+		calleeMap = make(map[int64][]string) // Continue with empty map
+	}
+
 	for _, path := range filePaths {
 		syms := symbolsByFile[path]
 		if len(syms) == 0 {
 			continue
 		}
 
-		// Extract keywords and build FTS entries for this file's symbols.
-		symKeywords := make([][]string, len(syms))
+		// Extract keywords (with callee names) and build FTS entries for this file's symbols.
+		symKeywords := make([]string, len(syms))
 		ftsEntries := make([]store.FTSSymbol, len(syms))
 		for j, s := range syms {
 			sig := s.CodeBlock
 			if idx := strings.IndexByte(sig, '\n'); idx >= 0 {
 				sig = sig[:idx]
 			}
-			kw := ExtractBodyKeywords(s.CodeBlock)
+			kw := BuildSymbolKeywords(s.CodeBlock, s.Kind, calleeMap[s.ID])
 			symKeywords[j] = kw
 			ftsEntries[j] = store.FTSSymbol{
 				SymbolID:      s.ID,
@@ -483,7 +498,7 @@ func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, fil
 				QualifiedName: s.QualifiedName,
 				Kind:          s.Kind,
 				Signature:     sig,
-				ExtraKeywords: strings.Join(kw, " "),
+				ExtraKeywords: kw,
 			}
 		}
 		if err := store.BatchInsertFTSSymbols(ctx, idx.db, ftsEntries); err != nil {
@@ -499,7 +514,12 @@ func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, fil
 
 			texts := make([]string, len(batch))
 			for j, s := range batch {
-				texts[j] = vectorstore.SymbolEmbedText(s.Kind, s.QualifiedName, s.CodeBlock, symKeywords[i+j]...)
+				// Split space-separated keywords back to slice for variadic call.
+				kwSlice := []string{}
+				if symKeywords[i+j] != "" {
+					kwSlice = strings.Fields(symKeywords[i+j])
+				}
+				texts[j] = vectorstore.SymbolEmbedText(s.Kind, s.QualifiedName, s.CodeBlock, kwSlice...)
 			}
 
 			vecs, err := idx.embedder.EmbedBatch(ctx, texts)

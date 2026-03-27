@@ -33,7 +33,7 @@ func TestNew_DoesNotPanic(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		s := server.New(cfg, db, nil, "test")
+		s := server.New(cfg, db, nil, nil, "test")
 		require.NotNil(t, s)
 	})
 }
@@ -49,6 +49,6 @@ func TestNew_WithNilEmbedder(t *testing.T) {
 		DBPath:      filepath.Join(t.TempDir(), "test.db"),
 	}
 
-	s := server.New(cfg, db, nil, "test")
+	s := server.New(cfg, db, nil, nil, "test")
 	require.NotNil(t, s, "server must not be nil even with nil embedder")
 }

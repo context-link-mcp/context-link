@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
@@ -96,6 +97,50 @@ func DeleteDependenciesByCallerFile(ctx context.Context, db *DB, repoName, fileP
 		return fmt.Errorf("store: failed to delete dependencies for file %s/%s: %w", repoName, filePath, err)
 	}
 	return nil
+}
+
+// GetCalleeNamesForSymbols returns a map of caller ID → []callee name for all given caller IDs.
+// Used during keyword enrichment to add function call names to embedding and FTS5 data.
+// Single batch query with IN clause for efficiency during bulk indexing.
+func GetCalleeNamesForSymbols(ctx context.Context, db *DB, callerIDs []int64) (map[int64][]string, error) {
+	if len(callerIDs) == 0 {
+		return make(map[int64][]string), nil
+	}
+
+	// Build parameterized IN clause.
+	placeholders := make([]string, len(callerIDs))
+	args := make([]any, len(callerIDs))
+	for i, id := range callerIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT d.caller_id, s.name
+		 FROM dependencies d
+		 JOIN symbols s ON s.id = d.callee_id
+		 WHERE d.caller_id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get callee names for symbols: %w", err)
+	}
+	defer rows.Close()
+
+	// Group results by caller ID.
+	result := make(map[int64][]string)
+	for rows.Next() {
+		var callerID int64
+		var calleeName string
+		if err := rows.Scan(&callerID, &calleeName); err != nil {
+			return nil, fmt.Errorf("store: failed to scan callee name row: %w", err)
+		}
+		result[callerID] = append(result[callerID], calleeName)
+	}
+
+	return result, rows.Err()
 }
 
 // scanDependencies scans multiple dependency rows.

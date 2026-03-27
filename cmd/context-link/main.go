@@ -358,8 +358,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Tools = flagTools
 	}
 
+	// Build language registry and indexer for reindex_project tool.
+	registry := buildLanguageRegistry()
+	repoName := filepath.Base(cfg.ProjectRoot)
+	idx := indexer.NewIndexer(registry, db, 4, embedder)
+
 	// Build MCP server with all tools registered.
-	srv := server.New(cfg, db, embedder, version)
+	srv := server.New(cfg, db, embedder, idx, version)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -367,8 +372,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Start file watcher if --watch is enabled.
 	if flagWatch {
-		registry := buildLanguageRegistry()
-		repoName := filepath.Base(cfg.ProjectRoot)
 		w := watcher.New(registry, db, embedder, cfg.ProjectRoot, repoName, 4)
 		go func() {
 			if err := w.Watch(ctx); err != nil {

@@ -534,6 +534,139 @@ func CountSymbols(ctx context.Context, db *DB, repoName string) (int64, error) {
 	return count, nil
 }
 
+// GitHunk represents a contiguous block of changed lines for line-range filtering.
+type GitHunk struct {
+	StartLine int // 1-indexed line number where the change starts
+	LineCount int // Number of lines in this change
+}
+
+// GetSymbolsByFileAndLines returns symbols whose line ranges intersect with any of the given hunks.
+// Used by get_modified_symbols to map git diff hunks to symbols.
+func GetSymbolsByFileAndLines(ctx context.Context, db *DB, repoName, filePath string, hunks []GitHunk) ([]models.Symbol, error) {
+	if len(hunks) == 0 {
+		// No hunks = no changes = no symbols to return.
+		return nil, nil
+	}
+
+	// Build a query with line range intersection checks for each hunk.
+	// A symbol overlaps with a hunk if: symbol.start_line <= hunk.end AND symbol.end_line >= hunk.start
+	var conditions []string
+	var args []any
+	args = append(args, repoName, filePath)
+
+	for _, hunk := range hunks {
+		hunkEnd := hunk.StartLine + hunk.LineCount - 1
+		conditions = append(conditions, "(start_line <= ? AND end_line >= ?)")
+		args = append(args, hunkEnd, hunk.StartLine)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, repo_name, name, qualified_name, kind, file_path,
+		        content_hash, code_block, start_line, end_line, language, indexed_at
+		 FROM symbols
+		 WHERE repo_name = ? AND file_path = ? AND (%s)
+		 ORDER BY start_line`,
+		strings.Join(conditions, " OR "),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get symbols by file and lines: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSymbols(rows)
+}
+
+// GetTestsForSymbol finds test functions that call the target symbol.
+// Uses the dependency graph to discover tests with proven call relationships.
+func GetTestsForSymbol(ctx context.Context, db *DB, repoName, symbolName string) ([]models.Symbol, error) {
+	// Resolve the target symbol first.
+	target, err := ResolveSymbol(ctx, db, repoName, symbolName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Query reverse dependencies (callers) that are in test files.
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+		       s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+		FROM dependencies d
+		JOIN symbols s ON d.caller_id = s.id
+		WHERE d.callee_id = ?
+		  AND s.repo_name = ?
+		  AND s.kind IN ('function', 'method')
+		  AND (
+			  s.file_path LIKE '%_test.go'
+			  OR s.file_path LIKE '%test_%'
+			  OR s.file_path LIKE '%.test.ts'
+			  OR s.file_path LIKE '%.test.tsx'
+			  OR s.file_path LIKE '%.test.js'
+			  OR s.file_path LIKE '%.test.jsx'
+			  OR s.file_path LIKE '%.spec.ts'
+			  OR s.file_path LIKE '%.spec.tsx'
+			  OR s.file_path LIKE '%.spec.js'
+			  OR s.file_path LIKE '%.spec.jsx'
+			  OR s.file_path LIKE '%/tests/%'
+			  OR s.file_path LIKE '%/test/%'
+			  OR s.file_path LIKE '%/__tests__/%'
+			  OR s.file_path LIKE '%_spec.rb'
+			  OR s.name LIKE 'test_%'
+			  OR s.name LIKE 'Test%'
+		  )
+		ORDER BY s.file_path, s.start_line
+	`, target.ID, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get tests for symbol: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSymbols(rows)
+}
+
+// GetTestsByNameHeuristic finds test functions whose names contain the target symbol name.
+// This is a fallback when dependency-based discovery returns no results.
+func GetTestsByNameHeuristic(ctx context.Context, db *DB, repoName, symbolName string) ([]models.Symbol, error) {
+	// Extract base name: "OrderService.ProcessOrder" → "ProcessOrder"
+	baseName := symbolName
+	if idx := strings.LastIndex(symbolName, "."); idx != -1 {
+		baseName = symbolName[idx+1:]
+	}
+
+	// Search for test functions whose name contains the base name (case-insensitive).
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, repo_name, name, qualified_name, kind, file_path,
+		       content_hash, code_block, start_line, end_line, language, indexed_at
+		FROM symbols
+		WHERE repo_name = ?
+		  AND kind IN ('function', 'method')
+		  AND (
+			  file_path LIKE '%_test.go'
+			  OR file_path LIKE '%test_%'
+			  OR file_path LIKE '%.test.ts'
+			  OR file_path LIKE '%.test.tsx'
+			  OR file_path LIKE '%.test.js'
+			  OR file_path LIKE '%.test.jsx'
+			  OR file_path LIKE '%.spec.ts'
+			  OR file_path LIKE '%.spec.tsx'
+			  OR file_path LIKE '%.spec.js'
+			  OR file_path LIKE '%.spec.jsx'
+			  OR file_path LIKE '%/tests/%'
+			  OR file_path LIKE '%/test/%'
+			  OR file_path LIKE '%/__tests__/%'
+			  OR file_path LIKE '%_spec.rb'
+		  )
+		  AND LOWER(name) LIKE '%' || LOWER(?) || '%'
+		ORDER BY file_path, start_line
+	`, repoName, baseName)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get tests by name heuristic: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSymbols(rows)
+}
+
 // scanSymbol scans a single symbol row.
 func scanSymbol(row *sql.Row) (*models.Symbol, error) {
 	var s models.Symbol
