@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ type SemanticSearchResult struct {
 	Kind          string  `json:"kind"`
 	FilePath      string  `json:"file_path"`
 	Similarity    float32 `json:"similarity_score"`
+	MatchSource   string  `json:"match_source"` // "vector", "fts", or "both"
 	MemoryCount   int     `json:"memory_count,omitempty"`
 }
 
@@ -71,6 +74,59 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName, tracker, vecCache)))
 }
 
+// rrfEntry is an intermediate result during Reciprocal Rank Fusion.
+type rrfEntry struct {
+	symbolID    int64
+	rrfScore    float64
+	similarity  float32 // best vector similarity (0 if FTS-only)
+	matchSource string  // "vector", "fts", or "both"
+}
+
+// rrfFuse merges ranked results from vector KNN and FTS5 using Reciprocal Rank
+// Fusion (RRF) with constant k=60. Returns fused results sorted by RRF score.
+func rrfFuse(vectorIDs []int64, vectorSims []float32, ftsIDs []int64, topK int) []rrfEntry {
+	const k = 60.0
+
+	scores := make(map[int64]*rrfEntry)
+
+	for rank, id := range vectorIDs {
+		e, ok := scores[id]
+		if !ok {
+			e = &rrfEntry{symbolID: id, matchSource: "vector"}
+			scores[id] = e
+		}
+		e.rrfScore += 1.0 / (k + float64(rank+1))
+		if rank < len(vectorSims) {
+			e.similarity = vectorSims[rank]
+		}
+	}
+
+	for rank, id := range ftsIDs {
+		e, ok := scores[id]
+		if !ok {
+			e = &rrfEntry{symbolID: id, matchSource: "fts"}
+			scores[id] = e
+		} else {
+			e.matchSource = "both"
+		}
+		e.rrfScore += 1.0 / (k + float64(rank+1))
+	}
+
+	result := make([]rrfEntry, 0, len(scores))
+	for _, e := range scores {
+		result = append(result, *e)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].rrfScore > result[j].rrfScore
+	})
+
+	if len(result) > topK {
+		result = result[:topK]
+	}
+	return result
+}
+
 // semanticSearchHandler returns the ToolHandlerFunc for semantic_search_symbols.
 func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName string, tracker *SessionTokenTracker, cache *vectorstore.VectorCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -109,40 +165,67 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: failed to embed query: %v", err)), nil
 		}
 
-		// --- KNN search (use cache if available, otherwise fall back to DB scan) ---
-		var hits []vectorstore.SearchResult
+		// --- Run KNN and FTS in parallel ---
+		fetchLimit := topK * 3
+
+		var knnHits []vectorstore.SearchResult
+		var ftsHits []store.FTSResult
+		var knnErr, ftsErr error
+
+		// KNN search.
 		if cache != nil {
-			hits, err = vectorstore.KNNSearchCached(ctx, db, cache, queryVec, topK*3, minSimilarity)
+			knnHits, knnErr = vectorstore.KNNSearchCached(ctx, db, cache, queryVec, fetchLimit, minSimilarity)
 		} else {
-			hits, err = vectorstore.KNNSearch(ctx, db, repoName, queryVec, topK*3, minSimilarity)
+			knnHits, knnErr = vectorstore.KNNSearch(ctx, db, repoName, queryVec, fetchLimit, minSimilarity)
 		}
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: search failed: %v", err)), nil
+		if knnErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: search failed: %v", knnErr)), nil
 		}
 
-		// --- Batch-fetch symbols for all KNN hits (single query instead of N+1) ---
-		hitIDs := make([]int64, len(hits))
-		for i, h := range hits {
-			hitIDs[i] = h.SymbolID
+		// FTS search (non-fatal if it fails — degrade to vector-only).
+		ftsHits, ftsErr = store.FTSSearch(ctx, db, repoName, query, fetchLimit)
+		if ftsErr != nil {
+			slog.Debug("semantic_search: FTS search failed, degrading to vector-only", "error", ftsErr)
+			ftsHits = nil
 		}
-		symbolMap, err := store.GetSymbolsByIDs(ctx, db, repoName, hitIDs)
+
+		// --- RRF fusion ---
+		vectorIDs := make([]int64, len(knnHits))
+		vectorSims := make([]float32, len(knnHits))
+		for i, h := range knnHits {
+			vectorIDs[i] = h.SymbolID
+			vectorSims[i] = h.Similarity
+		}
+		ftsIDs := make([]int64, len(ftsHits))
+		for i, h := range ftsHits {
+			ftsIDs[i] = h.SymbolID
+		}
+
+		fused := rrfFuse(vectorIDs, vectorSims, ftsIDs, topK*2)
+
+		// --- Batch-fetch symbols for all fused hits ---
+		fusedIDs := make([]int64, len(fused))
+		for i, f := range fused {
+			fusedIDs[i] = f.symbolID
+		}
+		symbolMap, err := store.GetSymbolsByIDs(ctx, db, repoName, fusedIDs)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: failed to fetch symbols: %v", err)), nil
 		}
 
-		// Apply filters and collect results in similarity order.
+		// Apply filters and collect results in RRF order.
 		type candidate struct {
 			symbolID int64
 			result   SemanticSearchResult
 		}
 		var candidates []candidate
-		for _, hit := range hits {
+		for _, f := range fused {
 			if len(candidates) >= topK {
 				break
 			}
-			sym, ok := symbolMap[hit.SymbolID]
+			sym, ok := symbolMap[f.symbolID]
 			if !ok {
-				continue // symbol may have been deleted since embedding was stored
+				continue
 			}
 			if kindFilter != "" && sym.Kind != kindFilter {
 				continue
@@ -157,7 +240,8 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 					QualifiedName: sym.QualifiedName,
 					Kind:          sym.Kind,
 					FilePath:      sym.FilePath,
-					Similarity:    float32(math.Round(float64(hit.Similarity)*100) / 100),
+					Similarity:    float32(math.Round(float64(f.similarity)*100) / 100),
+					MatchSource:   f.matchSource,
 				},
 			})
 		}

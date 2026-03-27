@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -353,6 +354,11 @@ func (idx *Indexer) storeFileResults(
 		return fmt.Errorf("indexer: failed to upsert file %s: %w", file.RelPath, err)
 	}
 
+	// Delete FTS entries before deleting symbols (FTS references symbol IDs).
+	if err := store.DeleteFTSByFile(ctx, idx.db, repoName, file.RelPath); err != nil {
+		slog.Warn("indexer: failed to delete FTS entries", "file", file.RelPath, "error", err)
+	}
+
 	// Delete existing symbols for this file (will be re-inserted).
 	if err := store.DeleteSymbolsByFile(ctx, idx.db, repoName, file.RelPath); err != nil {
 		return fmt.Errorf("indexer: failed to delete old symbols for %s: %w", file.RelPath, err)
@@ -449,14 +455,39 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 	return relinked
 }
 
-// generateEmbeddings generates and stores vector embeddings for all symbols
-// belonging to the given file paths. Returns the count of embeddings stored.
+// generateEmbeddings generates and stores vector embeddings and FTS5 entries
+// for all symbols belonging to the given file paths. Returns the count of
+// embeddings stored.
 func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, filePaths []string, symbolsByFile map[string][]models.Symbol) int {
 	embedded := 0
 	for _, path := range filePaths {
 		syms := symbolsByFile[path]
 		if len(syms) == 0 {
 			continue
+		}
+
+		// Extract keywords and build FTS entries for this file's symbols.
+		symKeywords := make([][]string, len(syms))
+		ftsEntries := make([]store.FTSSymbol, len(syms))
+		for j, s := range syms {
+			sig := s.CodeBlock
+			if idx := strings.IndexByte(sig, '\n'); idx >= 0 {
+				sig = sig[:idx]
+			}
+			kw := ExtractBodyKeywords(s.CodeBlock)
+			symKeywords[j] = kw
+			ftsEntries[j] = store.FTSSymbol{
+				SymbolID:      s.ID,
+				RepoName:      repoName,
+				Name:          s.Name,
+				QualifiedName: s.QualifiedName,
+				Kind:          s.Kind,
+				Signature:     sig,
+				ExtraKeywords: strings.Join(kw, " "),
+			}
+		}
+		if err := store.BatchInsertFTSSymbols(ctx, idx.db, ftsEntries); err != nil {
+			slog.Warn("indexer: failed to insert FTS entries", "file", path, "error", err)
 		}
 
 		for i := 0; i < len(syms); i += vectorstore.DefaultBatchSize {
@@ -468,7 +499,7 @@ func (idx *Indexer) generateEmbeddings(ctx context.Context, repoName string, fil
 
 			texts := make([]string, len(batch))
 			for j, s := range batch {
-				texts[j] = vectorstore.SymbolEmbedText(s.Kind, s.QualifiedName, s.CodeBlock)
+				texts[j] = vectorstore.SymbolEmbedText(s.Kind, s.QualifiedName, s.CodeBlock, symKeywords[i+j]...)
 			}
 
 			vecs, err := idx.embedder.EmbedBatch(ctx, texts)

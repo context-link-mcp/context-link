@@ -38,6 +38,11 @@ func TestSnapshotTypeScriptSymbols(t *testing.T) {
 	runSnapshotTest(t, adapters.NewTypeScriptAdapter(), "ts", "auth.ts")
 }
 
+func TestSnapshotPythonSymbols(t *testing.T) {
+	t.Parallel()
+	runSnapshotTest(t, adapters.NewPythonAdapter(), "python", "classes.py")
+}
+
 func runSnapshotTest(t *testing.T, adapter LanguageAdapter, langDir, fixture string) {
 	t.Helper()
 

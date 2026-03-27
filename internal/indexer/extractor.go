@@ -42,6 +42,62 @@ func NewExtractor() *Extractor {
 	return &Extractor{}
 }
 
+// classLikeNodeTypes maps AST node types to the field name that holds the
+// class/struct/impl name. Used by resolveParentClass to walk up the tree.
+var classLikeNodeTypes = map[string]string{
+	"class_definition":  "name", // Python
+	"class_declaration": "name", // TypeScript, JavaScript, Java, C#
+	"impl_item":         "type", // Rust
+	"class_specifier":   "name", // C++
+	"struct_specifier":  "name", // C++
+}
+
+// resolveParentClass walks up the AST from node to find an enclosing class,
+// struct, or impl container. Returns the container name and true if found.
+func resolveParentClass(node *sitter.Node, source []byte) (string, bool) {
+	current := node.Parent()
+	for current != nil {
+		if nameField, ok := classLikeNodeTypes[current.Type()]; ok {
+			nameNode := current.ChildByFieldName(nameField)
+			if nameNode != nil {
+				if content, ok := safeNodeContent(nameNode, source); ok && content != "" {
+					return content, true
+				}
+			}
+		}
+		current = current.Parent()
+	}
+	return "", false
+}
+
+// resolveGoReceiver extracts the receiver type from a Go method_declaration node.
+// For example, `func (c *Cache) Get()` returns "Cache".
+func resolveGoReceiver(node *sitter.Node, source []byte) (string, bool) {
+	if node.Type() != "method_declaration" {
+		return "", false
+	}
+	receiverNode := node.ChildByFieldName("receiver")
+	if receiverNode == nil {
+		return "", false
+	}
+	// The receiver is (parameter_list (parameter_declaration name: ... type: ...))
+	for i := 0; i < int(receiverNode.NamedChildCount()); i++ {
+		param := receiverNode.NamedChild(i)
+		typeNode := param.ChildByFieldName("type")
+		if typeNode == nil {
+			continue
+		}
+		// Unwrap pointer_type: *Foo → Foo
+		if typeNode.Type() == "pointer_type" && typeNode.NamedChildCount() > 0 {
+			typeNode = typeNode.NamedChild(0)
+		}
+		if content, ok := safeNodeContent(typeNode, source); ok && content != "" {
+			return content, true
+		}
+	}
+	return "", false
+}
+
 // ExtractSymbols runs the adapter's symbol query against the parsed tree
 // and returns the extracted symbols.
 func (e *Extractor) ExtractSymbols(
@@ -66,8 +122,6 @@ func (e *Extractor) ExtractSymbols(
 	cursor.Exec(query, tree.RootNode())
 
 	var symbols []models.Symbol
-	// Track class names for building qualified names of methods.
-	var currentClassName string
 	// Deduplicate symbols matched by overlapping patterns (e.g., both
 	// function_declaration and export_statement > function_declaration).
 	type symKey struct {
@@ -90,7 +144,7 @@ func (e *Extractor) ExtractSymbols(
 
 		match = cursor.FilterPredicates(match, source)
 
-		sym := e.processSymbolMatch(query, match, source, adapter, repoName, filePath, &currentClassName)
+		sym := e.processSymbolMatch(query, match, source, adapter, repoName, filePath)
 		if sym != nil {
 			key := symKey{name: sym.QualifiedName, startLine: sym.StartLine}
 			if seen[key] {
@@ -105,6 +159,8 @@ func (e *Extractor) ExtractSymbols(
 }
 
 // processSymbolMatch extracts a single symbol from a query match.
+// It uses AST parent traversal for robust qualified name resolution
+// across all languages, replacing the old currentClassName state machine.
 func (e *Extractor) processSymbolMatch(
 	query *sitter.Query,
 	match *sitter.QueryMatch,
@@ -112,7 +168,6 @@ func (e *Extractor) processSymbolMatch(
 	adapter LanguageAdapter,
 	repoName string,
 	filePath string,
-	currentClassName *string,
 ) *models.Symbol {
 	var name, body string
 	var kind string
@@ -143,15 +198,22 @@ func (e *Extractor) processSymbolMatch(
 		return nil
 	}
 
-	// Build qualified name.
+	// Build qualified name using AST parent traversal.
 	qualifiedName := name
-	if kind == "method" && *currentClassName != "" {
-		qualifiedName = *currentClassName + "." + name
-	}
-
-	// Track class name for subsequent method extraction.
-	if kind == "class" {
-		*currentClassName = name
+	if kind == "method" && adapter.Name() == "go" {
+		// Go methods: extract receiver type from method_declaration node.
+		if receiver, ok := resolveGoReceiver(outerNode, source); ok {
+			qualifiedName = receiver + "." + name
+		}
+	} else if kind == "method" || kind == "function" {
+		// All languages: walk up AST to find enclosing class/struct/impl.
+		if className, ok := resolveParentClass(outerNode, source); ok {
+			qualifiedName = className + "." + name
+			// Promote function to method if inside a class container.
+			if kind == "function" {
+				kind = "method"
+			}
+		}
 	}
 
 	// Use the outer node (full declaration) as the code block.

@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 )
 
 // RegisterSkeletonTool registers the get_file_skeleton MCP tool.
-func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
+func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName, projectRoot string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("get_file_skeleton",
 		mcp.WithDescription(
 			"Returns a structural outline of a file — symbol signatures only, no code bodies. "+
@@ -26,7 +28,7 @@ func RegisterSkeletonTool(s *server.MCPServer, db *store.DB, repoName string, ti
 			mcp.Description("Relative file path (e.g., 'internal/store/symbols.go')."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, fileSkeletonHandler(db, repoName, tracker)))
+	s.AddTool(tool, WithTimeout(timeout, fileSkeletonHandler(db, repoName, projectRoot, tracker)))
 }
 
 // skeletonEntry is one symbol in the skeleton response.
@@ -40,13 +42,24 @@ type skeletonEntry struct {
 }
 
 // fileSkeletonHandler returns the MCP tool handler for get_file_skeleton.
-func fileSkeletonHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
+func fileSkeletonHandler(db *store.DB, repoName, projectRoot string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
 		filePath, err := req.RequireString("file_path")
 		if err != nil || strings.TrimSpace(filePath) == "" {
 			return mcp.NewToolResultError("get_file_skeleton: 'file_path' parameter is required and must not be empty"), nil
+		}
+
+		// Check if the file exists on disk before querying the database.
+		if projectRoot != "" {
+			absPath := filepath.Join(projectRoot, filePath)
+			if _, err := os.Stat(absPath); os.IsNotExist(err) {
+				return mcp.NewToolResultError(fmt.Sprintf(
+					"get_file_skeleton: file %q does not exist on disk. Verify the path is correct and relative to the project root.",
+					filePath,
+				)), nil
+			}
 		}
 
 		symbols, err := store.GetSymbolsByFile(ctx, db, repoName, filePath)

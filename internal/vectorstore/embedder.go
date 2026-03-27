@@ -33,13 +33,18 @@ type Embedder interface {
 }
 
 // SymbolEmbedText builds the embedding input string for a symbol.
-// Format: "{kind} {qualified_name}: {first_line_of_code_block}"
-func SymbolEmbedText(kind, qualifiedName, codeBlock string) string {
+// Format: "{kind} {qualified_name}: {first_line_of_code_block} [kw1 kw2 ...]"
+// Optional keywords enrich the embedding with body-extracted terms.
+func SymbolEmbedText(kind, qualifiedName, codeBlock string, keywords ...string) string {
 	firstLine := codeBlock
 	if idx := strings.IndexByte(codeBlock, '\n'); idx >= 0 {
 		firstLine = codeBlock[:idx]
 	}
-	return kind + " " + qualifiedName + ": " + strings.TrimSpace(firstLine)
+	text := kind + " " + qualifiedName + ": " + strings.TrimSpace(firstLine)
+	if len(keywords) > 0 {
+		text += " [" + strings.Join(keywords, " ") + "]"
+	}
+	return text
 }
 
 // MockEmbedder returns deterministic, L2-normalized embeddings for testing.

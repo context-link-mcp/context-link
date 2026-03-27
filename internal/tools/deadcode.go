@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,7 +15,7 @@ import (
 )
 
 // RegisterDeadCodeTool registers the find_dead_code MCP tool.
-func RegisterDeadCodeTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
+func RegisterDeadCodeTool(s *server.MCPServer, db *store.DB, repoName, projectRoot string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("find_dead_code",
 		mcp.WithDescription(
 			"Finds symbols with zero inbound dependency edges (no callers). "+
@@ -32,7 +35,7 @@ func RegisterDeadCodeTool(s *server.MCPServer, db *store.DB, repoName string, ti
 			mcp.Description("Maximum number of results (default: 50, max: 200)."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, deadCodeHandler(db, repoName, tracker)))
+	s.AddTool(tool, WithTimeout(timeout, deadCodeHandler(db, repoName, projectRoot, tracker)))
 }
 
 // deadCodeEntry is one symbol in the dead code response.
@@ -46,12 +49,24 @@ type deadCodeEntry struct {
 }
 
 // deadCodeHandler returns the MCP tool handler for find_dead_code.
-func deadCodeHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
+func deadCodeHandler(db *store.DB, repoName, projectRoot string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
+		filePathParam := req.GetString("file_path", "")
+
+		// Check if the file exists on disk when a file_path filter is specified.
+		if filePathParam != "" && projectRoot != "" {
+			absPath := filepath.Join(projectRoot, filePathParam)
+			if _, err := os.Stat(absPath); os.IsNotExist(err) {
+				return mcp.NewToolResultError(fmt.Sprintf(
+					"find_dead_code: file %q does not exist on disk.", filePathParam,
+				)), nil
+			}
+		}
+
 		opts := store.DeadCodeOptions{
-			FilePath:        req.GetString("file_path", ""),
+			FilePath:        filePathParam,
 			Kind:            req.GetString("kind", ""),
 			ExcludeExported: req.GetBool("exclude_exported", true),
 			Limit:           req.GetInt("limit", 50),

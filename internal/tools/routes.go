@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,7 +15,7 @@ import (
 )
 
 // RegisterRoutesTool registers the find_http_routes MCP tool.
-func RegisterRoutesTool(s *server.MCPServer, db *store.DB, repoName string, timeout time.Duration, tracker *SessionTokenTracker) {
+func RegisterRoutesTool(s *server.MCPServer, db *store.DB, repoName, projectRoot string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("find_http_routes",
 		mcp.WithDescription(
 			"Discovers HTTP route definitions and call sites in the codebase. "+
@@ -30,7 +33,7 @@ func RegisterRoutesTool(s *server.MCPServer, db *store.DB, repoName string, time
 			mcp.Description("Optional: limit search to a specific file path."),
 		),
 	)
-	s.AddTool(tool, WithTimeout(timeout, routesHandler(db, repoName, tracker)))
+	s.AddTool(tool, WithTimeout(timeout, routesHandler(db, repoName, projectRoot, tracker)))
 }
 
 // routeEntry is one route in the response.
@@ -52,14 +55,26 @@ type routeMatchEntry struct {
 }
 
 // routesHandler returns the MCP tool handler for find_http_routes.
-func routesHandler(db *store.DB, repoName string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
+func routesHandler(db *store.DB, repoName, projectRoot string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
+
+		filePathParam := req.GetString("file_path", "")
+
+		// Check if the file exists on disk when a file_path filter is specified.
+		if filePathParam != "" && projectRoot != "" {
+			absPath := filepath.Join(projectRoot, filePathParam)
+			if _, err := os.Stat(absPath); os.IsNotExist(err) {
+				return mcp.NewToolResultError(fmt.Sprintf(
+					"find_http_routes: file %q does not exist on disk.", filePathParam,
+				)), nil
+			}
+		}
 
 		filter := store.RouteFilter{
 			Method:   req.GetString("method", ""),
 			Path:     req.GetString("path", ""),
-			FilePath: req.GetString("file_path", ""),
+			FilePath: filePathParam,
 			Limit:    100,
 		}
 

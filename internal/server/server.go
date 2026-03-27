@@ -75,12 +75,12 @@ func (s *Server) registerTools() {
 		{"semantic_search_symbols", func() {
 			tools.RegisterSemanticSearchTool(s.mcp, s.db, s.embedder, repoName, timeout, tracker, vecCache)
 		}},
-		{"get_file_skeleton", func() { tools.RegisterSkeletonTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"get_file_skeleton", func() { tools.RegisterSkeletonTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"get_symbol_usages", func() { tools.RegisterUsagesTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"get_call_tree", func() { tools.RegisterCallTreeTool(s.mcp, s.db, repoName, timeout, tracker) }},
-		{"find_dead_code", func() { tools.RegisterDeadCodeTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"find_dead_code", func() { tools.RegisterDeadCodeTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"get_blast_radius", func() { tools.RegisterBlastRadiusTool(s.mcp, s.db, repoName, timeout, tracker) }},
-		{"find_http_routes", func() { tools.RegisterRoutesTool(s.mcp, s.db, repoName, timeout, tracker) }},
+		{"find_http_routes", func() { tools.RegisterRoutesTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"memory", func() { tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout) }},
 	}
 

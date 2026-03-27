@@ -1,0 +1,66 @@
+[
+  {
+    "name": "UserService",
+    "qualified_name": "UserService",
+    "kind": "class",
+    "language": "python",
+    "start_line": 1,
+    "end_line": 9
+  },
+  {
+    "name": "__init__",
+    "qualified_name": "UserService.__init__",
+    "kind": "method",
+    "language": "python",
+    "start_line": 2,
+    "end_line": 3
+  },
+  {
+    "name": "get_user",
+    "qualified_name": "UserService.get_user",
+    "kind": "method",
+    "language": "python",
+    "start_line": 5,
+    "end_line": 6
+  },
+  {
+    "name": "delete_user",
+    "qualified_name": "UserService.delete_user",
+    "kind": "method",
+    "language": "python",
+    "start_line": 8,
+    "end_line": 9
+  },
+  {
+    "name": "standalone_function",
+    "qualified_name": "standalone_function",
+    "kind": "function",
+    "language": "python",
+    "start_line": 12,
+    "end_line": 13
+  },
+  {
+    "name": "AdminService",
+    "qualified_name": "AdminService",
+    "kind": "class",
+    "language": "python",
+    "start_line": 16,
+    "end_line": 18
+  },
+  {
+    "name": "promote",
+    "qualified_name": "AdminService.promote",
+    "kind": "method",
+    "language": "python",
+    "start_line": 17,
+    "end_line": 18
+  },
+  {
+    "name": "MAX_RETRIES",
+    "qualified_name": "MAX_RETRIES",
+    "kind": "variable",
+    "language": "python",
+    "start_line": 21,
+    "end_line": 21
+  }
+]

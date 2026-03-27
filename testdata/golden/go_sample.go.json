@@ -57,7 +57,7 @@
   },
   {
     "name": "Get",
-    "qualified_name": "Get",
+    "qualified_name": "Cache.Get",
     "kind": "method",
     "language": "go",
     "start_line": 43,
@@ -65,7 +65,7 @@
   },
   {
     "name": "Set",
-    "qualified_name": "Set",
+    "qualified_name": "Cache.Set",
     "kind": "method",
     "language": "go",
     "start_line": 51,
@@ -73,7 +73,7 @@
   },
   {
     "name": "Delete",
-    "qualified_name": "Delete",
+    "qualified_name": "Cache.Delete",
     "kind": "method",
     "language": "go",
     "start_line": 58,
