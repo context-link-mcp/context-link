@@ -92,6 +92,7 @@ func (s *Server) registerTools() {
 		{"find_dead_code", func() { tools.RegisterDeadCodeTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"get_blast_radius", func() { tools.RegisterBlastRadiusTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"find_http_routes", func() { tools.RegisterRoutesTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
+		{"search_code_patterns", func() { tools.RegisterSearchCodePatternsTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"memory", func() { tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout) }},
 	}
 

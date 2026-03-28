@@ -85,6 +85,18 @@ func DeleteFTSByFile(ctx context.Context, db *DB, repoName, filePath string) err
 	return nil
 }
 
+// sanitizeFTSQuery escapes FTS5 special characters to prevent query syntax errors.
+// FTS5 has special syntax for: AND, OR, NOT, parentheses, quotes, NEAR, *, ^
+// Strategy: wrap the entire query in double quotes for literal phrase mode.
+// This disables FTS5 operators but ensures no syntax errors from user input.
+// Internal double quotes are escaped by doubling them.
+func sanitizeFTSQuery(query string) string {
+	// Escape internal quotes: " → ""
+	escaped := strings.ReplaceAll(query, `"`, `""`)
+	// Wrap in quotes for literal phrase mode
+	return `"` + escaped + `"`
+}
+
 // FTSSearch performs a full-text search using FTS5 BM25 ranking.
 // Returns results ordered by relevance (best match first).
 func FTSSearch(ctx context.Context, db *DB, repoName, query string, limit int) ([]FTSResult, error) {
@@ -92,14 +104,8 @@ func FTSSearch(ctx context.Context, db *DB, repoName, query string, limit int) (
 		limit = 10
 	}
 
-	// Sanitize query for FTS5: escape double quotes.
-	sanitized := strings.ReplaceAll(query, "\"", "\"\"")
-	// Use OR to match any token (broadens recall for natural-language queries).
-	tokens := strings.Fields(sanitized)
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	ftsQuery := "\"" + strings.Join(tokens, "\" OR \"") + "\""
+	// Sanitize query to prevent FTS5 syntax errors from special characters.
+	ftsQuery := sanitizeFTSQuery(query)
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT symbol_id, rank

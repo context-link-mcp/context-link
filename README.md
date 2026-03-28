@@ -108,7 +108,7 @@ sudo dnf install gcc gcc-c++ make
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 
 # Release build (stripped binary, with version)
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.3.0" -o ./bin/context-link ./cmd/context-link
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.4.0" -o ./bin/context-link ./cmd/context-link
 
 # Or use the Makefile (auto-detects version from git tags)
 make build
@@ -220,14 +220,17 @@ You can either invoke the built-in `explore_codebase` MCP prompt directly in sup
 When exploring and modifying this codebase, you must prioritize the context-link MCP tools to minimize token consumption. Do not read raw files directly unless absolutely necessary. Follow this structural workflow:
 
 1. Call `read_architecture_rules` at the start of a session to understand the project's constraints.
-2. Use `semantic_search_symbols` to discover relevant symbols by intent.
-3. Use `get_file_skeleton` to understand a file's structure before diving in.
-4. Use `get_code_by_symbol` to retrieve only the specific code you need, along with its dependencies.
-5. Use `get_symbol_usages` and `get_call_tree` to explore call hierarchies and reverse dependencies.
-6. Use `find_dead_code` to discover unused symbols and `get_blast_radius` to assess the impact of your planned changes.
-7. Use `find_http_routes` to discover REST route definitions and match them to call sites.
-8. Always check the `memories` array in tool responses for prior human or agent findings about a symbol.
-9. After completing a significant feature or fix, call `save_symbol_memory` to persist your architectural findings for future sessions.
+2. Call `reindex_project` after modifying files to keep the symbol graph current (safe to call repeatedly).
+3. Use `get_modified_symbols` to discover what code has changed in the working tree (git-aware context).
+4. Use `semantic_search_symbols` to discover relevant symbols by intent.
+5. Use `get_file_skeleton` to understand a file's structure before diving in.
+6. Use `get_code_by_symbol` to retrieve only the specific code you need, along with its dependencies.
+7. Use `get_symbol_usages` and `get_call_tree` to explore call hierarchies and reverse dependencies.
+8. Use `get_tests_for_symbol` to find test functions for a symbol you're modifying.
+9. Use `find_dead_code` to discover unused symbols and `get_blast_radius` to assess the impact of your planned changes.
+10. Use `find_http_routes` to discover REST route definitions and match them to call sites.
+11. Always check the `memories` array in tool responses for prior human or agent findings about a symbol.
+12. After completing a significant feature or fix, call `save_symbol_memory` to persist your architectural findings for future sessions.
 ```
 
 ---
@@ -294,12 +297,12 @@ rm .context-link.db
 ## Tech Stack
 
 | Component | Technology |
-|-----------|------------|
+|---|---|
 | Runtime | Go 1.22+ |
 | Protocol | MCP via stdio (`mcp-go` v0.44.1) |
 | AST Parser | `go-tree-sitter` (language-agnostic via `LanguageAdapter` registry) |
 | Database | SQLite 3 (WAL mode, pure-Go driver via `modernc.org/sqlite`) |
-| Vector Search | Go-side KNN over L2-normalized float32 BLOBs in `vec_symbols` table |
+| Search Engine | Hybrid search: SQLite FTS5 (BM25) + Go-side Vector KNN, merged via Reciprocal Rank Fusion (RRF) |
 | Embeddings | Built-in `potion-base-4M` Model2Vec (128-dim, zero-config); optional ONNX override (`all-MiniLM-L6-v2`) |
 
 ---
@@ -354,6 +357,9 @@ log_level: info
 # Use this to reduce prompt token budget by disabling unused tools.
 # tools:
 #   - ping
+#   - reindex_project
+#   - get_modified_symbols
+#   - get_tests_for_symbol
 #   - semantic_search_symbols
 #   - get_code_by_symbol
 #   - get_file_skeleton
@@ -383,6 +389,95 @@ Health-check tool.
 ```json
 { "status": "ok", "metadata": { "timing_ms": 1 } }
 ```
+
+### `reindex_project`
+
+Triggers an incremental re-index of the project. Only re-parses files that changed since the last index. Call this after modifying files to ensure the symbol graph, dependencies, and search index are up to date.
+
+**Parameters:** none
+
+```json
+{
+  "files_scanned": 142,
+  "files_changed": 3,
+  "files_deleted": 0,
+  "files_unchanged": 139,
+  "symbols_added": 7,
+  "symbols_updated": 7,
+  "dependencies_updated": 12,
+  "fts_updated": true,
+  "embeddings_updated": true,
+  "duration_ms": 1240,
+  "metadata": { "timing_ms": 1242 }
+}
+```
+
+**Note:** This operation is idempotent — calling it twice with no file changes returns `files_changed: 0` in ~10ms.
+
+### `get_modified_symbols`
+
+Returns symbols (functions, methods, classes) that overlap with locally modified lines in the git working tree. Use this to orient yourself at the start of a session — it shows exactly what's being actively worked on.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `base_ref` | string | no | `HEAD` | Git ref to diff against (use `main` for branch diff, or a commit SHA) |
+| `include_staged` | boolean | no | `true` | Include staged (git add) changes in addition to unstaged |
+
+```json
+{
+  "base_ref": "HEAD",
+  "files_changed": 2,
+  "symbols": [
+    {
+      "name": "ProcessOrder",
+      "qualified_name": "OrderService.ProcessOrder",
+      "kind": "method",
+      "file_path": "internal/orders/service.go",
+      "start_line": 42,
+      "end_line": 78,
+      "changed_lines": [45, 46, 47, 52],
+      "change_type": "modified"
+    }
+  ],
+  "metadata": { "timing_ms": 34 }
+}
+```
+
+**Tip:** Call `reindex_project` first to ensure the index reflects the latest file state.
+
+### `get_tests_for_symbol`
+
+Finds test functions associated with a given symbol. Uses the dependency graph (tests that call the target) and naming conventions as fallback. Helps locate tests to update after modifying a function.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `symbol_name` | string | yes | — | Name or qualified name of the symbol to find tests for |
+| `include_code` | boolean | no | `false` | Include full test function bodies (default: false saves tokens) |
+
+```json
+{
+  "symbol": {
+    "name": "ProcessOrder",
+    "qualified_name": "OrderService.ProcessOrder",
+    "kind": "method",
+    "file_path": "internal/orders/service.go"
+  },
+  "tests": [
+    {
+      "name": "TestProcessOrder_Success",
+      "qualified_name": "TestProcessOrder_Success",
+      "file_path": "internal/orders/service_test.go",
+      "start_line": 15,
+      "end_line": 42,
+      "match_reason": "calls_target"
+    }
+  ],
+  "test_count": 1,
+  "metadata": { "timing_ms": 8 }
+}
+```
+
+**Match reasons:** `calls_target` (high confidence: proven call in dependency graph), `name_match` (lower confidence: naming convention only).
 
 ### `read_architecture_rules`
 

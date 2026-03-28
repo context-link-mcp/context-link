@@ -578,6 +578,51 @@ func GetSymbolsByFileAndLines(ctx context.Context, db *DB, repoName, filePath st
 	return scanSymbols(rows)
 }
 
+// SearchCodePatterns searches for symbols whose code_block matches a pattern.
+// Uses SQL LIKE for initial filtering, returning candidates for Go-side regex matching.
+// This reduces memory usage by not pulling all symbols into Go for pattern matching.
+// limit defaults to 50, max 200.
+func SearchCodePatterns(ctx context.Context, db *DB, repoName string, likePattern string, filePathPrefix string, kindFilter string, limit int) ([]models.Symbol, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	// Build query with LIKE prefiltering for efficiency.
+	query := `
+		SELECT id, repo_name, name, qualified_name, kind, file_path,
+		       content_hash, code_block, start_line, end_line, language, indexed_at
+		FROM symbols
+		WHERE repo_name = ? AND code_block LIKE ?
+	`
+	args := []any{repoName, "%" + likePattern + "%"}
+
+	// Optional file path prefix filter.
+	if filePathPrefix != "" {
+		query += " AND file_path LIKE ?"
+		args = append(args, filePathPrefix+"%")
+	}
+
+	// Optional kind filter.
+	if kindFilter != "" {
+		query += " AND kind = ?"
+		args = append(args, kindFilter)
+	}
+
+	query += " ORDER BY file_path, start_line LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to search code patterns: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSymbols(rows)
+}
+
 // GetTestsForSymbol finds test functions that call the target symbol.
 // Uses the dependency graph to discover tests with proven call relationships.
 func GetTestsForSymbol(ctx context.Context, db *DB, repoName, symbolName string) ([]models.Symbol, error) {
