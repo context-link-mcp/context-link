@@ -41,7 +41,7 @@ func TestGetCodeBySymbolHandler_Found(t *testing.T) {
 	db := openToolTestDB(t)
 	insertSymbol(t, db, "repo", "validateToken", "function", "function validateToken() {}")
 
-	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
+	handler := getCodeBySymbolHandlerBatch(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"symbol_name": "validateToken"}
 
@@ -54,20 +54,26 @@ func TestGetCodeBySymbolHandler_NotFound(t *testing.T) {
 	t.Parallel()
 	db := openToolTestDB(t)
 
-	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
+	handler := getCodeBySymbolHandlerBatch(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"symbol_name": "nonExistentSymbol"}
 
 	result, err := handler(context.Background(), req)
 	require.NoError(t, err)
-	assert.True(t, result.IsError, "should return error for unknown symbol")
+	assert.False(t, result.IsError, "batch handler returns success with error in results")
+
+	// With batch support, errors are in the results array
+	raw, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, raw.Text, `"error_count":1`)
+	assert.Contains(t, raw.Text, "not found")
 }
 
 func TestGetCodeBySymbolHandler_MissingParam(t *testing.T) {
 	t.Parallel()
 	db := openToolTestDB(t)
 
-	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
+	handler := getCodeBySymbolHandlerBatch(db, "repo", NewSessionTokenTracker())
 	result, err := callHandler(t, handler) // empty request
 	require.NoError(t, err)
 	assert.True(t, result.IsError, "missing symbol_name should return error")
@@ -78,7 +84,7 @@ func TestGetCodeBySymbolHandler_DepthClamped(t *testing.T) {
 	db := openToolTestDB(t)
 	insertSymbol(t, db, "repo", "myFunc", "function", "func myFunc() {}")
 
-	handler := getCodeBySymbolHandler(db, "repo", NewSessionTokenTracker())
+	handler := getCodeBySymbolHandlerBatch(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"symbol_name": "myFunc",

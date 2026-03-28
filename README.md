@@ -13,6 +13,8 @@ AI coding agents read entire files to understand context. This brute-force appro
 ## The Solution
 context-link acts as a structural intermediary that extracts and serves only the relevant code symbols, dependencies, and historical notes an agent needs. By eliminating blind file reads, it reduces token consumption by over 85%.
 
+**Built-in token savings tracking:** Every tool response includes `tokens_saved_est`, `cost_avoided_est`, `session_tokens_saved`, and `session_cost_avoided` in the `metadata` field—giving you real-time visibility into your efficiency gains.
+
 | Scenario | Avg Token Reduction | Target |
 |----------|---------------------|--------|
 | Single symbol lookup (depth=0) | **91.0%** | >80% |
@@ -496,12 +498,48 @@ Returns `ARCHITECTURE.md` as structured sections. Use at session start.
 
 ### `get_code_by_symbol`
 
-Extracts exact source code of a named symbol with transitive dependencies and import statements.
+Extracts exact source code of one or more named symbols with transitive dependencies and import statements. **Supports batch operations** for multiple symbols.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `symbol_name` | string | yes | — | Name or qualified name (e.g. `validateToken` or `UserAuth.validateToken`) |
-| `depth` | number | no | `1` | Dependency depth: `0` = symbol only, `1` = direct deps, max `3` |
+| `symbol_name` | string OR array | yes | — | Single symbol name OR array of symbol names (max 50). Supports qualified names (e.g. `UserAuth.validateToken`) |
+| `depth` | number | no | `1` | Dependency depth: `0` = symbol only, `1` = direct deps, max `3`. Applies to all symbols in batch |
+
+**Single symbol (backward compatible):**
+```json
+{ "symbol_name": "validateToken", "depth": 1 }
+```
+
+**Batch operation:**
+```json
+{ "symbol_name": ["validateToken", "UserAuth.login", "formatError"], "depth": 0 }
+```
+
+**Response format (batch):**
+```json
+{
+  "results": [
+    {
+      "input": "validateToken",
+      "data": {
+        "symbol": { "name": "validateToken", "code_block": "...", ... },
+        "dependencies": [...],
+        "memories": [...]
+      }
+    },
+    {
+      "input": "nonExistent",
+      "error": "symbol \"nonExistent\" not found in repository \"repo\""
+    }
+  ],
+  "total_symbols": 2,
+  "success_count": 1,
+  "error_count": 1,
+  "metadata": { "timing_ms": 18, "tokens_saved_est": 4200 }
+}
+```
+
+**Single symbol response (legacy format for backward compatibility):**
 
 ```json
 {
@@ -585,12 +623,49 @@ Deletes stale memories. Use `orphaned_only=true` to only delete memories with no
 
 ### `get_file_skeleton`
 
-Returns a structural outline of a file — symbol names, kinds, and signatures (first line of code block only). No full code bodies. Use to understand a file's structure before extracting specific symbols.
+Returns a structural outline of one or more files — symbol names, kinds, and signatures (first line of code block only). No full code bodies. Use to understand file structure before extracting specific symbols. **Supports batch operations** for multiple files.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file_path` | string | yes | — | Relative file path (e.g. `internal/store/symbols.go`) |
+| `file_path` | string OR array | yes | — | Single file path OR array of file paths (max 50). Relative paths (e.g. `internal/store/symbols.go`) |
 
+**Single file (backward compatible):**
+```json
+{ "file_path": "internal/store/symbols.go" }
+```
+
+**Batch operation:**
+```json
+{ "file_path": ["internal/store/symbols.go", "internal/store/files.go", "internal/store/deps.go"] }
+```
+
+**Response format (batch):**
+```json
+{
+  "results": [
+    {
+      "input": "internal/store/symbols.go",
+      "data": {
+        "file_path": "internal/store/symbols.go",
+        "symbols": [
+          { "name": "GetSymbolByName", "kind": "function", "signature": "func GetSymbolByName(...", "start_line": 42 }
+        ],
+        "symbol_count": 15
+      }
+    },
+    {
+      "input": "nonexistent.go",
+      "error": "file does not exist: nonexistent.go"
+    }
+  ],
+  "total_files": 2,
+  "success_count": 1,
+  "error_count": 1,
+  "metadata": { "timing_ms": 5, "tokens_saved_est": 3200 }
+}
+```
+
+**Single file response (legacy format for backward compatibility):**
 ```json
 {
   "file_path": "internal/store/symbols.go",
@@ -689,6 +764,52 @@ BFS through callers to show everything affected by changing a symbol. Groups res
 }
 ```
 
+### `search_code_patterns`
+
+**Database-driven regex search across indexed symbol code blocks.** Useful for finding error sentinels, retry logic, specific function calls, or any code pattern matching a regex.
+
+**CRITICAL LIMITATION:** This tool searches **indexed symbol code blocks only** (functions, classes, methods, types, variables). It does **NOT** search file-level code outside symbols such as:
+- Decorators (e.g., `@app.route` in Flask)
+- Top-level statements
+- Module docstrings
+- Configuration dictionaries
+- Import statements
+
+**For file-level patterns, read the file directly using the `Read` tool.**
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pattern` | string | yes | — | Regex pattern (Go RE2 syntax) to search for in code blocks |
+| `file_path_prefix` | string | no | _(all)_ | Filter to symbols in files starting with this prefix |
+| `kind` | string | no | _(all)_ | Filter: `function`, `class`, `interface`, `type`, `variable`, `method` |
+| `limit` | number | no | `50` | Max results (max `200`) |
+
+```json
+{
+  "results": [
+    {
+      "symbol_name": "ErrNotFound",
+      "qualified_name": "store.ErrNotFound",
+      "kind": "variable",
+      "file_path": "internal/store/errors.go",
+      "start_line": 12,
+      "end_line": 12,
+      "match_snippet": "var ErrNotFound = errors.New(\"not found\")",
+      "match_indices": [18, 40]
+    }
+  ],
+  "result_count": 1,
+  "pattern": "errors\\.New\\(",
+  "metadata": { "timing_ms": 8, "tokens_saved_est": 4200 }
+}
+```
+
+**Example patterns:**
+- Find error sentinels: `errors\\.New\\(`
+- Find retry logic: `retry.*(?:backoff|timeout)`
+- Find SQL queries: `SELECT.*FROM`
+- Find unsafe string concatenation: `\\+.*\\+`
+
 ### `find_http_routes`
 
 Discovers HTTP route definitions and call sites in the codebase. Supports Express, Gin, FastAPI, Flask, and similar frameworks. Matches route definitions to their call sites with confidence scoring.
@@ -715,6 +836,174 @@ Discovers HTTP route definitions and call sites in the codebase. Supports Expres
   "metadata": { "timing_ms": 12 }
 }
 ```
+
+---
+
+## Limitations & Known Issues
+
+While `context-link` dramatically reduces token consumption for symbol-based queries, it has specific limitations you should understand to use it effectively.
+
+### Symbol-Centric Index Architecture
+
+**What's Indexed:**
+- Functions, classes, methods, interfaces, types, variables **with AST nodes**
+- Code blocks that Tree-sitter identifies as named declarations
+- Dependencies between these symbols (call graph)
+
+**What's NOT Indexed:**
+- **File-level code outside symbols** (top-level statements in Python `__main__`, Go init blocks)
+- **Import/require statements** (not considered symbols)
+- **Decorators on classes** (e.g., `@app.route('/api/users')` in Flask)
+- **Module docstrings** (top-level documentation)
+- **Configuration dictionaries** at file scope (e.g., `SETTINGS = {...}` in Python)
+- **Inline comments** (only code blocks are indexed)
+
+**Impact:** Tools like `search_code_patterns` only search **indexed symbol code blocks**. If you need to find decorators, imports, or top-level configuration, fall back to reading the file directly with the `Read` tool.
+
+**Example Scenario:**
+```python
+# This Flask route decorator is NOT indexed:
+@app.route('/api/users', methods=['GET'])
+def get_users():  # ← This function IS indexed
+    return jsonify(users)
+```
+
+Searching for `@app.route` patterns will return zero results. Read `routes.py` directly to find decorator patterns.
+
+### Batch Parameters & Polymorphic Types
+
+The batch-enabled tools (`get_file_skeleton`, `get_code_by_symbol`) accept **either a single string OR an array of strings**:
+
+```json
+// Single file (backward compatible)
+{ "file_path": "internal/store/symbols.go" }
+
+// Multiple files (batch operation)
+{ "file_path": ["internal/store/symbols.go", "internal/store/files.go"] }
+```
+
+**Automatic JSON Array Parsing:** If you accidentally pass a JSON-serialized array as a string (e.g., `"[\"file1.go\", \"file2.go\"]"`), the tool will automatically detect and parse it. This prevents confusing "not indexed" errors when parameters are incorrectly formatted.
+
+**Batch Limits:**
+- Max 50 files per `get_file_skeleton` call
+- Max 50 symbols per `get_code_by_symbol` call
+- Per-item error handling: partial failures don't abort the entire batch
+
+### Tool Independence (No Compound Queries)
+
+Each MCP tool call is **independent**—there are no compound queries like "find all callers of X that don't check the error return value."
+
+**Workaround:** Chain tools manually:
+1. `search_code_patterns` to find error-returning functions
+2. `get_symbol_usages` to find callers
+3. `get_code_by_symbol` to inspect each caller
+4. Manually verify error handling logic
+
+**Example:** To find functions that call `store.GetUser()` but don't use `errors.Is()`:
+```
+1. search_code_patterns(pattern: "store\\.GetUser\\(")  → 12 callers
+2. get_code_by_symbol(symbol_name: each caller)       → inspect code
+3. Manually grep each code block for "errors.Is"
+```
+
+This is inherently token-expensive but still cheaper than reading all files.
+
+### No Negative Queries
+
+You **cannot** search for the **absence** of a pattern. Queries like "functions that DON'T call errors.Is" are not supported.
+
+**Workaround:**
+1. Get the full list of target symbols (`semantic_search_symbols`)
+2. Search for the positive pattern (`search_code_patterns`)
+3. Manually compute the set difference
+
+**Trust the result count:** If `search_code_patterns` returns `result_count: 2`, you can trust that only 2 symbols match. There's no hidden "maybe more" ambiguity.
+
+### search_code_patterns Scope Limitation
+
+**Tool:** `search_code_patterns`
+
+**What it searches:** The `code_block` column of the `symbols` table—only indexed symbol bodies.
+
+**What it CANNOT find:**
+- Decorators (Flask `@app.route`, FastAPI `@app.get`)
+- Import statements (`from typing import Optional`)
+- Top-level variable assignments outside functions (e.g., `logger = logging.getLogger()` in Python)
+- Main entrypoint code (`if __name__ == "__main__":` blocks)
+
+**The tool description explicitly warns about this limitation** to prevent confusion when searches return zero results.
+
+**When to fall back to direct file reads:**
+- Searching for import patterns: Use `Read` + manual grep
+- Finding decorator patterns: Use `find_http_routes` (specialized) or `Read`
+- Analyzing main entrypoints: Read `main.py`, `main.go`, etc. directly
+
+### Performance Characteristics
+
+**Fast operations (<10ms):**
+- `semantic_search_symbols` (in-memory vector cache, 0.2ms average)
+- `get_file_skeleton` (signature extraction only)
+- `reindex_project` (incremental, no file changes)
+
+**Moderate operations (10–100ms):**
+- `get_code_by_symbol` with `depth=1` (BFS dependency resolution)
+- `search_code_patterns` with broad regex (SQL LIKE prefiltering helps)
+
+**Slow operations (>100ms):**
+- `get_blast_radius` with `depth=5` (BFS through large call graphs)
+- `reindex_project` after modifying 50+ files (re-parses all changed files)
+
+**Tip:** Use `get_file_skeleton` before `get_code_by_symbol` to understand file structure first. Avoids guessing symbol names.
+
+### Known Edge Cases
+
+1. **Overloaded symbols:** If multiple symbols share the same name (e.g., `validate` in different classes), `get_code_by_symbol(symbol_name: "validate")` returns the **first match** by insertion order. Use **qualified names** (`ClassName.validate`) for disambiguation.
+
+2. **Stale embeddings:** If you switch between Model2Vec (128-dim) and ONNX (384-dim) embeddings, you **must** run `index --force` to regenerate all embeddings. Dimension mismatch causes search to fail silently.
+
+3. **Case sensitivity:** Symbol names are **case-sensitive**. `GetUser` and `getUser` are distinct. Use `semantic_search_symbols` with natural language queries if unsure of exact casing.
+
+4. **Multi-repo namespacing:** When indexing multiple repos into one database (`--repo-name`), always specify `repo_name` in queries. Omitting it searches across all repos, which may return unexpected matches.
+
+### Best Practices for Token Efficiency
+
+**Built-in Observability:**
+Every tool response includes real-time token savings metrics in the `metadata` field:
+```json
+{
+  "metadata": {
+    "timing_ms": 18,
+    "tokens_saved_est": 4200,
+    "cost_avoided_est": "$0.05",
+    "session_tokens_saved": 12500,
+    "session_cost_avoided": "$0.15"
+  }
+}
+```
+
+Use these metrics to **verify actual savings during your workflow**. If `tokens_saved_est` is low or negative, you may be using the wrong tool for the task (e.g., searching for file-level patterns with `search_code_patterns` instead of `Read`).
+
+**DO:**
+- ✅ Use `semantic_search_symbols` for discovery (metadata only, ~388 tokens for 10 results)
+- ✅ Use `get_file_skeleton` to understand file structure (signatures only, <200 tokens)
+- ✅ Batch operations when inspecting multiple symbols (`get_code_by_symbol` with arrays)
+- ✅ Trust `result_count` fields—if a search returns 2 matches, there are exactly 2 matches
+- ✅ Check `memories` arrays for prior findings before re-analyzing code
+- ✅ **Monitor `tokens_saved_est` in responses—it's your efficiency compass**
+
+**DON'T:**
+- ❌ Read entire files for symbol lookup (defeats the purpose)
+- ❌ Search for file-level patterns with `search_code_patterns` (use `Read` instead)
+- ❌ Expect compound queries ("callers that don't X")—chain tools manually
+- ❌ Re-index unnecessarily—incremental updates are fast, `--force` is slow
+- ❌ **Ignore low or negative `tokens_saved_est`—it signals you're using the wrong approach**
+
+**Token Savings Rule of Thumb:**
+- Single symbol lookup: **91% reduction** vs. reading full file
+- Symbol + dependencies (depth=1): **86% reduction**
+- Aggregate discovery (search → skeleton → extract): **80–85% reduction**
+
+For a 70-80% token reduction across a real-world audit task (as reported in user feedback), the key is **using the right tool for the job**: semantic search for discovery, skeleton for structure, code extraction for implementation, and direct file reads **only** for file-level patterns.
 
 ---
 

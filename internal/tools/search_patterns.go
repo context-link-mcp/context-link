@@ -190,6 +190,11 @@ func extractLiteralSubstring(pattern string) string {
 	// Walk through the string and find the first run of word characters.
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		// Skip backslash escape sequences (e.g., \b, \., \\)
+		if c == '\\' && i+1 < len(s) {
+			i++ // Skip the escaped character
+			continue
+		}
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
 			start := i
 			// Find the end of this word sequence.
