@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,17 +10,6 @@ import (
 	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
-
-// openMemTestDB opens a migrated temp DB for memory tests.
-func openMemTestDB(t *testing.T) *store.DB {
-	t.Helper()
-	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mem_test.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() }) //nolint:errcheck
-	require.NoError(t, store.Migrate(db))
-	return db
-}
 
 // seedSymbol inserts a minimal symbol and returns its ID.
 func seedSymbol(t *testing.T, db *store.DB, repo, qualifiedName, filePath string) int64 {
@@ -39,7 +27,7 @@ func seedSymbol(t *testing.T, db *store.DB, repo, qualifiedName, filePath string
 
 func TestSaveMemory_Basic(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "validateToken", "auth.go")
@@ -58,7 +46,7 @@ func TestSaveMemory_Basic(t *testing.T) {
 
 func TestSaveMemory_NoteTooLong(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "foo", "foo.go")
@@ -77,7 +65,7 @@ func TestSaveMemory_NoteTooLong(t *testing.T) {
 
 func TestSaveMemory_DuplicateRejected(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "bar", "bar.go")
@@ -92,7 +80,7 @@ func TestSaveMemory_DuplicateRejected(t *testing.T) {
 
 func TestSaveMemory_NilSymbolID(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	mem := &models.Memory{
@@ -109,7 +97,7 @@ func TestSaveMemory_NilSymbolID(t *testing.T) {
 
 func TestGetMemoriesBySymbolID(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "myFunc", "file.go")
@@ -126,7 +114,7 @@ func TestGetMemoriesBySymbolID(t *testing.T) {
 
 func TestGetMemoriesBySymbolName(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "validateToken", "auth.go")
@@ -141,7 +129,7 @@ func TestGetMemoriesBySymbolName(t *testing.T) {
 
 func TestGetMemoriesBySymbolName_NoMatch(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	mems, err := store.GetMemoriesBySymbolName(ctx, db, "repo", "nonExistent", 0, 10)
@@ -151,7 +139,7 @@ func TestGetMemoriesBySymbolName_NoMatch(t *testing.T) {
 
 func TestGetMemoriesByFilePath(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	sym1 := seedSymbol(t, db, "repo", "funcA", "service.go")
@@ -172,7 +160,7 @@ func TestGetMemoriesByFilePath(t *testing.T) {
 
 func TestGetMemoriesByFilePath_Pagination(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "bigFunc", "big.go")
@@ -196,7 +184,7 @@ func TestGetMemoriesByFilePath_Pagination(t *testing.T) {
 
 func TestSnapshotAndMarkStale(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "changedFunc", "mod.go")
@@ -218,7 +206,7 @@ func TestSnapshotAndMarkStale(t *testing.T) {
 
 func TestGetOrphanedMemoriesBySymbol(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	// Orphaned memory (no symbol_id).
@@ -240,7 +228,7 @@ func TestGetOrphanedMemoriesBySymbol(t *testing.T) {
 
 func TestRelinkMemory(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	// Create orphaned memory.
@@ -270,7 +258,7 @@ func TestRelinkMemory(t *testing.T) {
 
 func TestCountMemoriesBySymbolID(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "counter", "cnt.go")
@@ -291,7 +279,7 @@ func TestCountMemoriesBySymbolID(t *testing.T) {
 
 func TestCountMemoriesBySymbolIDs(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	sym1 := seedSymbol(t, db, "repo", "s1", "f1.go")
@@ -312,7 +300,7 @@ func TestCountMemoriesBySymbolIDs(t *testing.T) {
 
 func TestPurgeStaleMemories_All(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	symID := seedSymbol(t, db, "repo", "staleFunc", "f.go")
@@ -329,7 +317,7 @@ func TestPurgeStaleMemories_All(t *testing.T) {
 
 func TestPurgeStaleMemories_OrphanedOnly(t *testing.T) {
 	t.Parallel()
-	db := openMemTestDB(t)
+	db := store.SetupTestDB(t)
 	ctx := context.Background()
 
 	// Orphaned stale memory.

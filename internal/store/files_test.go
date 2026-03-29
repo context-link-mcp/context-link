@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/context-link-mcp/context-link/pkg/models"
@@ -87,15 +86,4 @@ func TestDeleteFileByPath(t *testing.T) {
 
 	_, err := GetFileByPath(ctx, db, "repo", "a.ts")
 	assert.ErrorIs(t, err, ErrFileNotFound)
-}
-
-// setupTestDB creates a temporary SQLite database for testing.
-func setupTestDB(t *testing.T) *DB {
-	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := Open(dbPath)
-	require.NoError(t, err)
-	require.NoError(t, Migrate(db))
-	t.Cleanup(func() { db.Close() })
-	return db
 }
