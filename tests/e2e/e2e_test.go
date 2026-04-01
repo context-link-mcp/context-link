@@ -18,16 +18,37 @@ import (
 
 // TestMain ensures the binary is built before running E2E tests.
 func TestMain(m *testing.M) {
-	// Build binary once for all tests
+	// Build binary once for all tests.
+	// The test working directory is tests/e2e/, so "../.." is the repo root.
 	repoRoot := filepath.Join("..", "..")
+
+	// binPath is relative to tests/e2e/ (used by binaryPath() and os.Stat below)
 	binPath := filepath.Join(repoRoot, "bin", "context-link.exe")
 
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/context-link")
+	// Create bin directory if it doesn't exist
+	binDir := filepath.Dir(binPath)
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create bin directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build with -o relative to cmd.Dir (the repo root), not relative to tests/e2e/
+	cmd := exec.Command("go", "build", "-o", filepath.Join("bin", "context-link.exe"), "./cmd/context-link")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	cmd.Dir = repoRoot
 
-	if err := cmd.Run(); err != nil {
+	// Capture output to display if build fails
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to build binary: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Build output:\n%s\n", string(output))
+		os.Exit(1)
+	}
+
+	// Verify binary was created (binPath is relative to cwd = tests/e2e/)
+	if _, err := os.Stat(binPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Binary not found at %s: %v\n", binPath, err)
+		fmt.Fprintf(os.Stderr, "Build output:\n%s\n", string(output))
 		os.Exit(1)
 	}
 
