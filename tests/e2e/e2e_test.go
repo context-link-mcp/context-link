@@ -18,26 +18,28 @@ import (
 
 // TestMain ensures the binary is built before running E2E tests.
 func TestMain(m *testing.M) {
-	// Build binary once for all tests.
 	// The test working directory is tests/e2e/, so "../.." is the repo root.
 	repoRoot := filepath.Join("..", "..")
 
-	// binPath is relative to tests/e2e/ (used by binaryPath() and os.Stat below)
-	binPath := filepath.Join(repoRoot, "bin", "context-link.exe")
-
-	// Create bin directory if it doesn't exist
-	binDir := filepath.Dir(binPath)
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create bin directory: %v\n", err)
+	// Build binary into a temp directory to avoid permission issues
+	// (e.g., WSL accessing Windows filesystem).
+	tmpDir, err := os.MkdirTemp("", "context-link-e2e-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create temp dir: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.RemoveAll(tmpDir)
 
-	// Build with -o relative to cmd.Dir (the repo root), not relative to tests/e2e/
-	cmd := exec.Command("go", "build", "-o", filepath.Join("bin", "context-link.exe"), "./cmd/context-link")
+	binName := "context-link"
+	if runtime.GOOS == "windows" {
+		binName = "context-link.exe"
+	}
+	binPath := filepath.Join(tmpDir, binName)
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", binPath, "./cmd/context-link")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	cmd.Dir = repoRoot
 
-	// Capture output to display if build fails
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to build binary: %v\n", err)
@@ -45,16 +47,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Verify binary was created (binPath is relative to cwd = tests/e2e/)
 	if _, err := os.Stat(binPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Binary not found at %s: %v\n", binPath, err)
-		fmt.Fprintf(os.Stderr, "Build output:\n%s\n", string(output))
 		os.Exit(1)
 	}
 
-	// Run tests
-	code := m.Run()
+	// Set package-level variable so all tests can find the binary.
+	testBinaryPath = binPath
 
+	code := m.Run()
 	os.Exit(code)
 }
 

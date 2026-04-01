@@ -17,10 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testBinaryPath is set by TestMain after building the binary.
+var testBinaryPath string
+
 // binaryPath returns the path to the compiled context-link binary.
-// Tests should build the binary before running E2E tests.
 func binaryPath() string {
-	return filepath.Join("..", "..", "bin", "context-link.exe")
+	return testBinaryPath
 }
 
 // runCLI executes the context-link CLI with the given arguments and returns stdout, stderr, and exit code.
@@ -133,7 +135,16 @@ type MCPClient struct {
 func NewMCPClient(t *testing.T, projectRoot string) *MCPClient {
 	t.Helper()
 
-	cmd := exec.Command(binaryPath(), "serve", "--project-root", projectRoot)
+	// Use the same DB path as indexRepo to ensure consistency
+	dbPath := filepath.Join(projectRoot, ".context-link.db")
+	t.Logf("NewMCPClient: project_root=%s db_path=%s binary=%s", projectRoot, dbPath, binaryPath())
+
+	// Verify DB exists before starting server
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err, "DB should exist at %s before starting serve", dbPath)
+	t.Logf("NewMCPClient: DB size=%d bytes", info.Size())
+
+	cmd := exec.Command(binaryPath(), "serve", "--project-root", projectRoot, "--db-path", dbPath)
 
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
@@ -329,5 +340,13 @@ func indexRepo(t *testing.T, root string) {
 	// Check both stdout and stderr for "indexing complete" (logs may go to either)
 	output := strings.ToLower(stdout + stderr)
 	require.Contains(t, output, "indexing complete", "index output should confirm completion")
+
+	// Log full output for CI debugging
+	t.Logf("index stdout: %s", stdout)
+	t.Logf("index stderr: %s", stderr)
+
+	// Verify symbols were extracted (catches silent indexing failures).
+	// The JSON log contains "symbols":N and the text summary contains "Symbols extracted:".
+	require.NotContains(t, output, `"symbols":0`, "indexer should extract at least one symbol")
 }
 
