@@ -120,6 +120,28 @@ func TestCSharpAdapter(t *testing.T) {
 	assert.NotEmpty(t, a.GetDependencyQuery(), "dependency query must not be empty")
 }
 
+func TestKotlinAdapter(t *testing.T) {
+	t.Parallel()
+	a := adapters.NewKotlinAdapter()
+
+	assert.Equal(t, "kotlin", a.Name())
+	assert.Equal(t, []string{".kt", ".kts"}, a.Extensions())
+	require.NotNil(t, a.GetLanguage(), "GetLanguage must return a non-nil grammar")
+	assert.NotEmpty(t, a.GetSymbolQuery(), "symbol query must not be empty")
+	assert.NotEmpty(t, a.GetDependencyQuery(), "dependency query must not be empty")
+}
+
+func TestSwiftAdapter(t *testing.T) {
+	t.Parallel()
+	a := adapters.NewSwiftAdapter()
+
+	assert.Equal(t, "swift", a.Name())
+	assert.Equal(t, []string{".swift"}, a.Extensions())
+	require.NotNil(t, a.GetLanguage(), "GetLanguage must return a non-nil grammar")
+	assert.NotEmpty(t, a.GetSymbolQuery(), "symbol query must not be empty")
+	assert.NotEmpty(t, a.GetDependencyQuery(), "dependency query must not be empty")
+}
+
 // TestAdapterQueriesCompile verifies all .scm queries compile against their grammars.
 func TestAdapterQueriesCompile(t *testing.T) {
 	t.Parallel()
@@ -142,6 +164,8 @@ func TestAdapterQueriesCompile(t *testing.T) {
 		adapters.NewCAdapter(),
 		adapters.NewCppAdapter(),
 		adapters.NewCSharpAdapter(),
+		adapters.NewKotlinAdapter(),
+		adapters.NewSwiftAdapter(),
 	}
 
 	for _, a := range all {
@@ -175,6 +199,8 @@ func TestAdapterNamesAreUnique(t *testing.T) {
 		adapters.NewCAdapter(),
 		adapters.NewCppAdapter(),
 		adapters.NewCSharpAdapter(),
+		adapters.NewKotlinAdapter(),
+		adapters.NewSwiftAdapter(),
 	}
 	seen := make(map[string]bool)
 	for _, a := range all {
@@ -202,6 +228,8 @@ func TestAdapterExtensionsAreUnique(t *testing.T) {
 		adapters.NewCAdapter(),
 		adapters.NewCppAdapter(),
 		adapters.NewCSharpAdapter(),
+		adapters.NewKotlinAdapter(),
+		adapters.NewSwiftAdapter(),
 	}
 	seen := make(map[string]string)
 	for _, a := range all {
