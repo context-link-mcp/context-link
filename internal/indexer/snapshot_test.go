@@ -43,6 +43,16 @@ func TestSnapshotPythonSymbols(t *testing.T) {
 	runSnapshotTest(t, adapters.NewPythonAdapter(), "python", "classes.py")
 }
 
+func TestSnapshotKotlinSymbols(t *testing.T) {
+	t.Parallel()
+	runSnapshotTest(t, adapters.NewKotlinAdapter(), "kotlin", "Sample.kt")
+}
+
+func TestSnapshotSwiftSymbols(t *testing.T) {
+	t.Parallel()
+	runSnapshotTest(t, adapters.NewSwiftAdapter(), "swift", "Sample.swift")
+}
+
 func runSnapshotTest(t *testing.T, adapter LanguageAdapter, langDir, fixture string) {
 	t.Helper()
 

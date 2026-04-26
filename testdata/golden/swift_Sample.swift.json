@@ -1,0 +1,130 @@
+[
+  {
+    "name": "Repository",
+    "qualified_name": "Repository",
+    "kind": "interface",
+    "language": "swift",
+    "start_line": 4,
+    "end_line": 10
+  },
+  {
+    "name": "User",
+    "qualified_name": "User",
+    "kind": "class",
+    "language": "swift",
+    "start_line": 12,
+    "end_line": 16
+  },
+  {
+    "name": "id",
+    "qualified_name": "id",
+    "kind": "variable",
+    "language": "swift",
+    "start_line": 13,
+    "end_line": 13
+  },
+  {
+    "name": "name",
+    "qualified_name": "name",
+    "kind": "variable",
+    "language": "swift",
+    "start_line": 14,
+    "end_line": 14
+  },
+  {
+    "name": "email",
+    "qualified_name": "email",
+    "kind": "variable",
+    "language": "swift",
+    "start_line": 15,
+    "end_line": 15
+  },
+  {
+    "name": "UserRole",
+    "qualified_name": "UserRole",
+    "kind": "type",
+    "language": "swift",
+    "start_line": 18,
+    "end_line": 22
+  },
+  {
+    "name": "UserCompletion",
+    "qualified_name": "UserCompletion",
+    "kind": "type",
+    "language": "swift",
+    "start_line": 24,
+    "end_line": 24
+  },
+  {
+    "name": "UserRepository",
+    "qualified_name": "UserRepository",
+    "kind": "class",
+    "language": "swift",
+    "start_line": 26,
+    "end_line": 48
+  },
+  {
+    "name": "Entity",
+    "qualified_name": "Entity",
+    "kind": "type",
+    "language": "swift",
+    "start_line": 27,
+    "end_line": 27
+  },
+  {
+    "name": "store",
+    "qualified_name": "store",
+    "kind": "variable",
+    "language": "swift",
+    "start_line": 29,
+    "end_line": 29
+  },
+  {
+    "name": "findById",
+    "qualified_name": "UserRepository.findById",
+    "kind": "method",
+    "language": "swift",
+    "start_line": 31,
+    "end_line": 33
+  },
+  {
+    "name": "findAll",
+    "qualified_name": "UserRepository.findAll",
+    "kind": "method",
+    "language": "swift",
+    "start_line": 35,
+    "end_line": 37
+  },
+  {
+    "name": "save",
+    "qualified_name": "UserRepository.save",
+    "kind": "method",
+    "language": "swift",
+    "start_line": 39,
+    "end_line": 43
+  },
+  {
+    "name": "delete",
+    "qualified_name": "UserRepository.delete",
+    "kind": "method",
+    "language": "swift",
+    "start_line": 45,
+    "end_line": 47
+  },
+  {
+    "name": "createUser",
+    "qualified_name": "createUser",
+    "kind": "function",
+    "language": "swift",
+    "start_line": 50,
+    "end_line": 53
+  },
+  {
+    "name": "user",
+    "qualified_name": "user",
+    "kind": "variable",
+    "language": "swift",
+    "start_line": 51,
+    "end_line": 51
+  }
+]

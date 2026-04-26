@@ -284,6 +284,14 @@ func buildLanguageRegistry() *indexer.LanguageRegistry {
 		slog.Error("failed to register C# adapter", "error", err)
 	}
 
+	if err := registry.Register(adapters.NewKotlinAdapter()); err != nil {
+		slog.Error("failed to register Kotlin adapter", "error", err)
+	}
+
+	if err := registry.Register(adapters.NewSwiftAdapter()); err != nil {
+		slog.Error("failed to register Swift adapter", "error", err)
+	}
+
 	return registry
 }
 

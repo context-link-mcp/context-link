@@ -1,0 +1,122 @@
+[
+  {
+    "name": "Repository",
+    "qualified_name": "Repository",
+    "kind": "class",
+    "language": "kotlin",
+    "start_line": 6,
+    "end_line": 11
+  },
+  {
+    "name": "User",
+    "qualified_name": "User",
+    "kind": "class",
+    "language": "kotlin",
+    "start_line": 13,
+    "end_line": 17
+  },
+  {
+    "name": "UserRole",
+    "qualified_name": "UserRole",
+    "kind": "type",
+    "language": "kotlin",
+    "start_line": 19,
+    "end_line": 23
+  },
+  {
+    "name": "UserCache",
+    "qualified_name": "UserCache",
+    "kind": "class",
+    "language": "kotlin",
+    "start_line": 25,
+    "end_line": 32
+  },
+  {
+    "name": "cache",
+    "qualified_name": "cache",
+    "kind": "variable",
+    "language": "kotlin",
+    "start_line": 26,
+    "end_line": 26
+  },
+  {
+    "name": "get",
+    "qualified_name": "get",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 28,
+    "end_line": 28
+  },
+  {
+    "name": "put",
+    "qualified_name": "put",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 29,
+    "end_line": 31
+  },
+  {
+    "name": "UserRepository",
+    "qualified_name": "UserRepository",
+    "kind": "class",
+    "language": "kotlin",
+    "start_line": 34,
+    "end_line": 52
+  },
+  {
+    "name": "store",
+    "qualified_name": "store",
+    "kind": "variable",
+    "language": "kotlin",
+    "start_line": 35,
+    "end_line": 35
+  },
+  {
+    "name": "findById",
+    "qualified_name": "findById",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 37,
+    "end_line": 38
+  },
+  {
+    "name": "findAll",
+    "qualified_name": "findAll",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 40,
+    "end_line": 40
+  },
+  {
+    "name": "save",
+    "qualified_name": "save",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 42,
+    "end_line": 47
+  },
+  {
+    "name": "delete",
+    "qualified_name": "delete",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 49,
+    "end_line": 51
+  },
+  {
+    "name": "createUser",
+    "qualified_name": "createUser",
+    "kind": "function",
+    "language": "kotlin",
+    "start_line": 54,
+    "end_line": 57
+  },
+  {
+    "name": "user",
+    "qualified_name": "user",
+    "kind": "variable",
+    "language": "kotlin",
+    "start_line": 55,
+    "end_line": 55
+  }
+]
