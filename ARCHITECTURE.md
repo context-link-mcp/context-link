@@ -52,6 +52,8 @@ internal/
       c_lang.go                 # .c/.h adapter (smacker/go-tree-sitter/c)
       cpp.go                    # .cpp/.hpp/.cc/.cxx/.hxx/.hh adapter (smacker/go-tree-sitter/cpp)
       csharp.go                 # .cs adapter (smacker/go-tree-sitter/csharp)
+      kotlin.go                 # .kt/.kts adapter (smacker/go-tree-sitter/kotlin)
+      swift.go                  # .swift adapter (smacker/go-tree-sitter/swift)
       queries/
         ts_symbols.scm          # TS symbol extraction (functions, classes, methods, interfaces, types)
         ts_deps.scm             # TS dependency extraction (imports, calls, extends, implements)
@@ -71,6 +73,10 @@ internal/
         cpp_deps.scm            # C++ dependency extraction (includes, calls)
         csharp_symbols.scm      # C# symbol extraction (classes, interfaces, methods, structs, enums)
         csharp_deps.scm         # C# dependency extraction (using, calls)
+        kotlin_symbols.scm      # Kotlin symbol extraction (classes, data classes, enums, objects, functions, properties)
+        kotlin_deps.scm         # Kotlin dependency extraction (imports, calls, delegation specifiers)
+        swift_symbols.scm       # Swift symbol extraction (class/struct/actor, enum, protocol, func, property, typealias)
+        swift_deps.scm          # Swift dependency extraction (imports, calls, inheritance specifiers)
   store/
     db.go                       # SQLite connection (WAL mode, 0600 perms, single-writer pool)
     migrate.go                  # Forward-only embedded migration runner
@@ -116,6 +122,8 @@ testdata/
   langs/ts/auth.ts              # TypeScript fixture (class, interface, type, methods, arrow fns)
   langs/tsx/Button.tsx           # TSX fixture (React component, interface, class)
   langs/go/sample.go            # Go fixture (struct, interface, methods, functions, const, var)
+  langs/kotlin/Sample.kt        # Kotlin fixture (interface, data class, enum, object, class, functions)
+  langs/swift/Sample.swift      # Swift fixture (protocol, struct, enum, typealias, class, methods)
   golden/                       # Snapshot golden JSON files for regression testing
 ```
 

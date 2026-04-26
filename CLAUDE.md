@@ -98,7 +98,7 @@ internal/server/server.go         MCP server setup, config-driven tool registry
 internal/indexer/indexer.go        Pipeline orchestrator: walk → parse → extract → store → resolve → embed
 internal/indexer/language.go       LanguageAdapter interface + registry
 internal/indexer/extractor.go      Tree-sitter query-based symbol/dep extraction
-internal/indexer/adapters/         10 language adapters (TS, TSX, Go, Python, JS, Rust, Java, C, C++, C#) + .scm query files
+internal/indexer/adapters/         12 language adapters (TS, TSX, Go, Python, JS, Rust, Java, C, C++, C#, Kotlin, Swift) + .scm query files
 internal/store/symbols.go          Symbol CRUD + BFS transitive dependency resolution
 internal/store/dependencies.go     Dependency edge CRUD
 internal/vectorstore/model2vec.go  Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config)
@@ -137,3 +137,4 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
 - **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes)
+- **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both

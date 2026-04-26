@@ -4,7 +4,7 @@
 
 context-link is a local MCP server that serves structured code context to AI agents, dramatically reducing token consumption compared to reading entire files. It indexes codebases using a language-agnostic Tree-sitter adapter system, builds a symbol + dependency graph, and exposes tools over the Model Context Protocol.
 
-**Supported languages:** TypeScript (`.ts`), TSX/JSX (`.tsx`, `.jsx`), Go (`.go`), Python (`.py`), JavaScript (`.js`, `.mjs`), Rust (`.rs`), Java (`.java`), C (`.c`, `.h`), C++ (`.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx`, `.hh`), C# (`.cs`) — extensible via the `LanguageAdapter` interface.
+**Supported languages:** TypeScript (`.ts`), TSX/JSX (`.tsx`, `.jsx`), Go (`.go`), Python (`.py`), JavaScript (`.js`, `.mjs`), Rust (`.rs`), Java (`.java`), C (`.c`, `.h`), C++ (`.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx`, `.hh`), C# (`.cs`), Kotlin (`.kt`, `.kts`), Swift (`.swift`) — extensible via the `LanguageAdapter` interface.
 
 ## The Problem
 
@@ -110,7 +110,7 @@ sudo dnf install gcc gcc-c++ make
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 
 # Release build (stripped binary, with version)
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v0.4.0" -o ./bin/context-link ./cmd/context-link
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v1.1.0" -o ./bin/context-link ./cmd/context-link
 
 # Or use the Makefile (auto-detects version from git tags)
 make build
