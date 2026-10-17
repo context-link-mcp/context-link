@@ -119,6 +119,7 @@ internal/tools/ping.go             Health-check tool
 internal/tools/architecture.go     read_architecture_rules tool
 internal/tools/timeout.go          WithTimeout middleware for tool handlers
 internal/store/routes.go           Route CRUD, filtering, path normalization, confidence matching
+internal/indexer/routes.go         Route extraction (FastAPI/Flask/Express) via adapters' optional GetRouteQuery()
 internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index)
 ```
 
@@ -137,5 +138,5 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 3 (Semantic Search):** Complete — Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config), optional ONNX override, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
-- **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; tool and schema only, indexer extraction pending CL-2)
+- **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; indexer extracts FastAPI/Flask/Express definitions only — Gin, Django, Spring and client call sites are not extracted yet)
 - **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both

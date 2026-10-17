@@ -29,6 +29,11 @@ def run_model(model_id: int):
     return {}
 
 
+@router.get("")
+def root_of_router():
+    pass
+
+
 @router.get(some_variable)
 def dynamic_path():
     pass
@@ -116,7 +121,8 @@ func TestExtractRoutesFastAPI(t *testing.T) {
 	routes := indexRoutes(t, "models.py", fastAPISource)
 	got := routeSet(routes)
 
-	require.Len(t, routes, 2)
+	require.Len(t, routes, 3)
+	assert.Contains(t, got, routeKey{"GET", "/api/models"}, `@router.get("") maps to the prefix`)
 	list := got[routeKey{"GET", "/api/models/"}]
 	assert.Equal(t, "fastapi", list.Framework)
 	assert.Equal(t, "/api/models/", list.NormalizedPath)

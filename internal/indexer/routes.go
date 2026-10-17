@@ -80,6 +80,9 @@ func joinRoutePath(prefix, path string) string {
 	if prefix == "" {
 		return path
 	}
+	if path == "" {
+		return prefix
+	}
 	return strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
@@ -195,7 +198,8 @@ func (e *Extractor) ExtractRoutes(
 			continue
 		}
 		path, ok := unquoteStringLiteral(text("route.path"))
-		if !ok || !strings.HasPrefix(path, "/") {
+		// An empty path is valid on a prefixed router (@router.get("")).
+		if !ok || (path != "" && !strings.HasPrefix(path, "/")) {
 			continue
 		}
 
@@ -213,12 +217,17 @@ func (e *Extractor) ExtractRoutes(
 	}
 
 	// Prefixes can be declared after use in source order; apply them last.
-	for i := range routes {
+	// Routes whose path is still empty (no prefix to give them one) are dropped.
+	kept := routes[:0]
+	for i, r := range routes {
 		if p, ok := prefixes[receivers[i]]; ok {
-			routes[i].PathPattern = joinRoutePath(p, routes[i].PathPattern)
+			r.PathPattern = joinRoutePath(p, r.PathPattern)
+		}
+		if r.PathPattern != "" {
+			kept = append(kept, r)
 		}
 	}
-	return routes, nil
+	return kept, nil
 }
 
 // pythonRoutes builds routes for one matched FastAPI/Flask decorator.
