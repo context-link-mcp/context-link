@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "repository": "extract",
+  "index": {
+    "files_discovered": 4,
+    "files_indexed": 4,
+    "parse_failures": [],
+    "symbols": 9,
+    "languages": {
+      "javascript": 1,
+      "python": 3
+    }
+  },
+  "entry_points": [
+    {
+      "method": "POST",
+      "path": "/api/login",
+      "handler": "login",
+      "file": "app/main.py",
+      "line": 8,
+      "framework": "fastapi"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/{user_id}",
+      "handler": "get_user",
+      "file": "app/main.py",
+      "line": 14,
+      "framework": "fastapi"
+    },
+    {
+      "method": "GET",
+      "path": "/api",
+      "handler": "list_routes",
+      "file": "app/main.py",
+      "line": 20,
+      "framework": "fastapi"
+    },
+    {
+      "method": "GET",
+      "path": "/orders",
+      "handler": "listOrders",
+      "file": "web/server.js",
+      "line": 8,
+      "framework": "express"
+    },
+    {
+      "method": "POST",
+      "path": "/orders/:id/refund",
+      "file": "web/server.js",
+      "line": 9,
+      "framework": "express"
+    }
+  ],
+  "files": [
+    {
+      "path": "app/auth.py",
+      "tier": "code",
+      "symbols": [
+        "hash_password",
+        "verify_token"
+      ],
+      "reason": "query: user authentication token",
+      "score": 0.032,
+      "content": "def hash_password(password: str, salt: str) -\u003e str:\n    \"\"\"Hash a password with a salt for storage.\"\"\"\n    return hashlib.sha256((salt + password).encode()).hexdigest()\n\ndef verify_token(token: str) -\u003e bool:\n    \"\"\"Check an authentication token against the session store.\"\"\"\n    return token.startswith(\"abc\")"
+    },
+    {
+      "path": "app/main.py",
+      "tier": "skeleton",
+      "symbols": [
+        "router",
+        "login",
+        "get_user",
+        "list_routes"
+      ],
+      "reason": "query: user authentication token",
+      "score": 0.016,
+      "content": "router = APIRouter(prefix=\"/api\")\ndef login(body: dict):\ndef get_user(user_id: int, token: str = Depends(verify_token)):\ndef list_routes():"
+    }
+  ],
+  "budget": {
+    "limit_bytes": 450,
+    "used_bytes": 448
+  },
+  "warnings": [
+    "1 matches in tests, fixtures, vendored code or migrations were excluded (use --include-tests)"
+  ]
+}
