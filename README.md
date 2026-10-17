@@ -110,7 +110,7 @@ sudo dnf install gcc gcc-c++ make
 CGO_ENABLED=1 go build -o ./bin/context-link ./cmd/context-link
 
 # Release build (stripped binary, with version)
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v1.1.0" -o ./bin/context-link ./cmd/context-link
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=v1.2.0" -o ./bin/context-link ./cmd/context-link
 
 # Or use the Makefile (auto-detects version from git tags)
 make build
