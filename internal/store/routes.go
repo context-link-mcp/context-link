@@ -63,6 +63,20 @@ func DeleteRoutesByRepo(ctx context.Context, db *DB, repoName string) error {
 	return nil
 }
 
+// DeleteRoutesByFile removes the routes of the given kind ("definition" or
+// "call_site") detected in a single file. Called before re-indexing a file so
+// routes are replaced rather than duplicated.
+func DeleteRoutesByFile(ctx context.Context, db *DB, repoName, filePath, kind string) error {
+	_, err := db.ExecContext(ctx,
+		`DELETE FROM routes WHERE repo_name = ? AND file_path = ? AND kind = ?`,
+		repoName, filePath, kind,
+	)
+	if err != nil {
+		return fmt.Errorf("store: failed to delete routes for %s: %w", filePath, err)
+	}
+	return nil
+}
+
 // FindRoutes retrieves routes matching the given filter.
 func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter) ([]models.Route, error) {
 	if filter.Limit <= 0 {

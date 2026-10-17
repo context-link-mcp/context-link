@@ -13,6 +13,9 @@ var jsSymbolsQuery []byte
 //go:embed queries/js_deps.scm
 var jsDepsQuery []byte
 
+//go:embed queries/js_routes.scm
+var jsRoutesQuery []byte
+
 // JavaScriptAdapter implements the LanguageAdapter interface for JavaScript source files (.js, .mjs).
 // It uses the Tree-sitter JavaScript grammar for parsing.
 type JavaScriptAdapter struct{}
@@ -45,4 +48,9 @@ func (a *JavaScriptAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting JavaScript dependencies.
 func (a *JavaScriptAdapter) GetDependencyQuery() []byte {
 	return jsDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Express-style routes.
+func (a *JavaScriptAdapter) GetRouteQuery() []byte {
+	return jsRoutesQuery
 }

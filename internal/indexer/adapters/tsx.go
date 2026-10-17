@@ -17,6 +17,9 @@ var tsxSymbolQuery []byte
 //go:embed queries/ts_deps.scm
 var tsxDepsQuery []byte
 
+//go:embed queries/js_routes.scm
+var tsxRoutesQuery []byte
+
 // TSXAdapter implements the LanguageAdapter interface for TSX/JSX files.
 // It uses the TSX grammar which can parse JSX tags but may misparse
 // advanced generics in pure .ts files — hence the separate adapter.
@@ -50,4 +53,9 @@ func (a *TSXAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting TSX dependencies.
 func (a *TSXAdapter) GetDependencyQuery() []byte {
 	return tsxDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Express-style routes.
+func (a *TSXAdapter) GetRouteQuery() []byte {
+	return tsxRoutesQuery
 }

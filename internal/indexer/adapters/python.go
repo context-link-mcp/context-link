@@ -13,6 +13,9 @@ var pythonSymbolsQuery []byte
 //go:embed queries/python_deps.scm
 var pythonDepsQuery []byte
 
+//go:embed queries/python_routes.scm
+var pythonRoutesQuery []byte
+
 // PythonAdapter implements the LanguageAdapter interface for Python source files (.py).
 // It uses the Tree-sitter Python grammar for parsing.
 type PythonAdapter struct{}
@@ -45,4 +48,9 @@ func (a *PythonAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting Python dependencies.
 func (a *PythonAdapter) GetDependencyQuery() []byte {
 	return pythonDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting FastAPI/Flask routes.
+func (a *PythonAdapter) GetRouteQuery() []byte {
+	return pythonRoutesQuery
 }
