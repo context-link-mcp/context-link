@@ -11,30 +11,27 @@ import (
 
 const defaultParseTimeout = 5 * time.Second
 
-// ParserPool manages a pool of reusable Tree-sitter parsers for a single
-// language grammar. One pool should be created per grammar (TS vs TSX).
+// ParserPool creates Tree-sitter parsers for a single language grammar
+// (TS vs TSX are distinct pools).
+//
+// Parsers are deliberately NOT reused. smacker's ParseCtx starts a watcher
+// goroutine that sets the parser's cancellation flag when ctx is done. Parse
+// cancels its timeout context on return, so that goroutine can win the race
+// against parseComplete and set the flag on a parser that is already back in a
+// pool; the next parse on it then aborts with "operation limit was hit". That
+// silently dropped ~19% of symbols on a 364-file repo, so every parse gets a
+// fresh parser. Creating one is cheap next to the parse itself.
 type ParserPool struct {
-	pool     sync.Pool
 	language *sitter.Language
 }
 
-// NewParserPool creates a parser pool for the given Tree-sitter language.
+// NewParserPool creates a parser factory for the given Tree-sitter language.
 func NewParserPool(lang *sitter.Language) *ParserPool {
-	pp := &ParserPool{language: lang}
-	pp.pool = sync.Pool{
-		New: func() any {
-			p := sitter.NewParser()
-			p.SetLanguage(lang)
-			return p
-		},
-	}
-	return pp
+	return &ParserPool{language: lang}
 }
 
 // Parse parses the given source code into a Tree-sitter AST tree.
 // It respects context cancellation and applies a default 5s timeout.
-// The caller must NOT hold a reference to the returned tree after
-// it is done reading — the parser may be reused.
 func (pp *ParserPool) Parse(ctx context.Context, source []byte) (*sitter.Tree, error) {
 	// Apply timeout if context doesn't already have a deadline.
 	if _, ok := ctx.Deadline(); !ok {
@@ -43,15 +40,16 @@ func (pp *ParserPool) Parse(ctx context.Context, source []byte) (*sitter.Tree, e
 		defer cancel()
 	}
 
-	parser := pp.pool.Get().(*sitter.Parser)
-	defer pp.pool.Put(parser)
-
 	// Check for cancellation before parsing.
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("indexer: parse cancelled: %w", ctx.Err())
 	default:
 	}
+
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(pp.language)
 
 	tree, err := parser.ParseCtx(ctx, nil, source)
 	if err != nil {

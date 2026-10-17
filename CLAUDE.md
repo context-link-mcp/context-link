@@ -13,8 +13,9 @@ context-link is a local MCP server (Go) that serves structured code context to A
 | `ARCHITECTURE.md` | System design, component map, data flow, design principles |
 | `README.md` (Building section) | CGo dependencies, platform-specific build instructions |
 | `.claude/plans/task.md` | Phase-by-phase task checklist with validation notes |
-| `.claude/plans/Context.md` | Full implementation plan (problem, architecture, metrics) |
+| `.claude/plans/archive-completed-plans.md` | Original implementation plans (Context.md etc.), merged archive |
 | `.claude/rules/coding-standards.md` | Non-negotiable coding conventions |
+| `.claude/rules/branching.md` | Branch, commit and PR rules (never commit to `master`) |
 | `internal/store/migrations/001_initial.sql` | Database schema (source of truth for tables/indexes) |
 | `pkg/models/models.go` | Shared types: Symbol, Memory, File, Dependency |
 
@@ -80,7 +81,7 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 
 ### Tree-sitter
 - Separate grammars: TS and TSX are distinct C bindings
-- One parser pool per grammar (reuse via `sync.Pool`)
+- One parser factory per grammar; a fresh parser per parse (pooled parsers get poisoned by stale cancellation, see parser.go)
 - `.scm` query files embedded via `//go:embed`, relative to adapter package
 - Symbol deduplication by (qualified_name, start_line) in extractor
 
@@ -136,5 +137,5 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 3 (Semantic Search):** Complete — Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config), optional ONNX override, BERT tokenizer, BLOB-based KNN vecstore, semantic_search_symbols tool, embedding pipeline in indexer
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
-- **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes)
+- **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; tool and schema only, indexer extraction pending CL-2)
 - **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both
