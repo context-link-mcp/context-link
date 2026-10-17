@@ -37,6 +37,9 @@ CGO_ENABLED=1 go test ./... -count=1
 # Start MCP server
 ./bin/context-link.exe serve --project-root .
 
+# Batch extraction for other tools (one JSON document on stdout; exit 0 ok, 1 usage, 2 index unusable)
+./bin/context-link.exe extract --project-root . --query "auth" --profile threat-model
+
 # Update snapshot golden files after changing .scm queries or extractors
 CGO_ENABLED=1 go test ./internal/indexer/ -args -update-golden
 ```
@@ -120,6 +123,8 @@ internal/tools/architecture.go     read_architecture_rules tool
 internal/tools/timeout.go          WithTimeout middleware for tool handlers
 internal/store/routes.go           Route CRUD, filtering, path normalization, confidence matching
 internal/indexer/routes.go         Route extraction (FastAPI/Flask/Express) via adapters' optional GetRouteQuery()
+internal/extract/extract.go        `extract` command core: multi-query hybrid search, test filtering, budget packing, entry points (JSON schema_version 1)
+cmd/context-link/extract.go        `extract` subcommand (flags, incremental index, exit codes)
 internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index)
 ```
 

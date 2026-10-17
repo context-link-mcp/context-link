@@ -180,6 +180,9 @@ func fileSkeletonHandlerBatch(db *store.DB, repoName, projectRoot string, tracke
 	}
 }
 
+// ExtractSignature returns the first line of a code block (the signature).
+func ExtractSignature(codeBlock string) string { return extractSignature(codeBlock) }
+
 // extractSignature returns the first line of a code block (the signature).
 func extractSignature(codeBlock string) string {
 	if idx := strings.IndexByte(codeBlock, '\n'); idx >= 0 {

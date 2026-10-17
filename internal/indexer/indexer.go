@@ -32,6 +32,13 @@ type IndexStats struct {
 	MemoriesRelinked    int           `json:"memories_relinked"`
 	Duration            time.Duration `json:"duration"`
 	Errors              int           `json:"errors"`
+	FailedFiles         []IndexFailure `json:"failed_files,omitempty"`
+}
+
+// IndexFailure records a file that could not be parsed or stored.
+type IndexFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // fileResult holds the parsed output for a single file from Phase 3.
@@ -127,6 +134,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 				)
 				mu.Lock()
 				stats.Errors++
+				stats.FailedFiles = append(stats.FailedFiles, IndexFailure{Path: f.RelPath, Error: err.Error()})
 				mu.Unlock()
 				return nil // don't abort on single file failure
 			}
@@ -150,6 +158,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 				"error", err,
 			)
 			stats.Errors++
+			stats.FailedFiles = append(stats.FailedFiles, IndexFailure{Path: r.file.RelPath, Error: err.Error()})
 			continue
 		}
 		stats.FilesIndexed++

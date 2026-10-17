@@ -47,7 +47,7 @@ var (
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
@@ -117,7 +117,8 @@ func init() {
 	// File watcher flag (serve only).
 	serveCmd.Flags().BoolVar(&flagWatch, "watch", false, "auto re-index on file changes")
 
-	rootCmd.AddCommand(serveCmd, indexCmd, versionCmd)
+	registerExtractFlags()
+	rootCmd.AddCommand(serveCmd, indexCmd, extractCmd, versionCmd)
 }
 
 func runIndex(cmd *cobra.Command, args []string) error {
