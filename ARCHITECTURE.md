@@ -29,15 +29,17 @@ Injects developer-written or agent-written memory notes linked to specific AST n
 ## Component Map
 
 ```
-cmd/context-link/               # CLI entry point (cobra): serve, index, version
+cmd/context-link/               # CLI entry point (cobra): serve, index, extract, version
+  extract.go                    # `extract` subcommand: flags, incremental index, JSON output, exit codes
 internal/
   server/
     server.go                   # MCP server setup, config-driven tool registry, stdio transport
   indexer/
     language.go                 # LanguageAdapter interface + LanguageRegistry (RWMutex)
     walker.go                   # File walker (.gitignore, SHA-256 hashing, 1MB limit)
-    parser.go                   # ParserPool (sync.Pool) + ParserPoolManager (lazy, per-grammar)
+    parser.go                   # ParserPool (fresh parser per parse — pooled parsers get poisoned by stale cancellation) + ParserPoolManager (lazy, per-grammar)
     extractor.go                # Query-based symbol + dependency extraction with dedup
+    routes.go                   # HTTP route extraction (FastAPI, Flask, Express) via the optional RouteQueryProvider adapter interface; stores routes + handler links
     indexer.go                  # Pipeline orchestrator: walk → filter → parse → extract → store → resolve
     snapshot_test.go            # Golden JSON snapshot tests (-update-golden flag)
     crosslang_test.go           # Cross-language schema consistency + dependency edge tests
@@ -61,8 +63,10 @@ internal/
         go_deps.scm             # Go dependency extraction (imports, calls)
         python_symbols.scm      # Python symbol extraction (functions, classes, assignments)
         python_deps.scm         # Python dependency extraction (imports, calls)
+        python_routes.scm       # FastAPI/Flask route decorators + APIRouter/Blueprint prefixes
         js_symbols.scm          # JavaScript symbol extraction (functions, classes, methods, variables)
         js_deps.scm             # JavaScript dependency extraction (imports, calls)
+        js_routes.scm           # Express-style route registration (shared by JS, TS and TSX adapters)
         rust_symbols.scm        # Rust symbol extraction (functions, structs, enums, traits, impls)
         rust_deps.scm           # Rust dependency extraction (use statements, calls)
         java_symbols.scm        # Java symbol extraction (classes, interfaces, methods, enums)
@@ -83,12 +87,15 @@ internal/
     files.go                    # File registry CRUD (upsert, get, list, delete)
     symbols.go                  # Symbol CRUD (batch insert, search, fuzzy match, BFS transitive deps, dead code detection)
     dependencies.go             # Dependency edge CRUD (insert, batch, reverse lookup, file-scoped delete)
-    routes.go                   # Route CRUD (batch insert, filtering, path normalization, confidence matching)
+    routes.go                   # Route CRUD (batch insert, per-file delete, filtering, path normalization, confidence matching)
+    stats.go                    # Index statistics (files per language)
     migrations/
       001_initial.sql           # Schema: files, symbols, dependencies, memories, indexes
       002_vec_symbols.sql       # Schema: vec_symbols (float32 BLOB embeddings for KNN search)
       003_vec_dimension_meta.sql # Schema: vec_meta (embedding dimension tracking)
       005_routes.sql            # Schema: routes (HTTP route definitions and call sites)
+  extract/
+    extract.go                  # Batch context extraction: multi-query hybrid search, test/fixture filtering, budget packing (code → skeleton), entry points; Result is JSON schema_version 1
   vectorstore/                  # Phase 3: embedding generation + vector search
     embedder.go                 # Embedder interface, MockEmbedder, SymbolEmbedText helper
     tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding, dynamic special IDs)
@@ -102,7 +109,7 @@ internal/
     ping.go                     # Health-check tool (status, version, uptime, runtime info)
     architecture.go             # read_architecture_rules tool (parses ARCHITECTURE.md → JSON sections)
     get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps + memories, depth 0-3)
-    semantic_search.go          # semantic_search_symbols tool (embed query → KNN → join + filter + memory_count)
+    semantic_search.go          # semantic_search_symbols tool + exported HybridSearch (embed query → KNN + FTS5 → RRF), reused by `extract`
     memory.go                   # save_symbol_memory, get_symbol_memories, purge_stale_memories tools
     skeleton.go                 # get_file_skeleton tool (structural outline, signatures only)
     usages.go                   # get_symbol_usages tool (reverse dependency lookup — who calls this?)
@@ -183,8 +190,8 @@ The indexer runs a six-phase pipeline via `errgroup` bounded worker pools:
 2. Filter    →  Compare SHA-256 hashes against files table (incremental); detect + remove deleted files;
                 snapshot memories as stale before overwriting changed symbols; --force bypasses hash check
 3. Parse     →  Tree-sitter AST parsing via adapter-specific grammar pools
-4. Extract   →  Run .scm queries to capture symbols + dependencies
-5. Store     →  Batch insert into SQLite (single-writer, transactions)
+4. Extract   →  Run .scm queries to capture symbols, dependencies and (for adapters that provide a route query) HTTP routes
+5. Store     →  Batch insert into SQLite (single-writer, transactions); routes are stored after symbols so handlers link to symbol IDs
 6. Resolve   →  BFS dependency resolution against symbol name index
 7. Embed     →  Generate embeddings (built-in Model2Vec or ONNX) + upsert into vec_symbols
 8. Recover   →  Orphan recovery: re-link orphaned memories to newly indexed symbols by (qualified_name, file_path)
@@ -199,7 +206,13 @@ All parsing is driven by the `LanguageAdapter` interface. Adding a new language 
 3. An adapter struct satisfying the interface
 4. Registration in `buildLanguageRegistry()`
 
-The core pipeline (walker, parser pool, extractor, store) is fully generic.
+The core pipeline (walker, parser pool, extractor, store) is fully generic. Route extraction is an optional extra: an adapter opts in by implementing `RouteQueryProvider` (`GetRouteQuery() []byte`); currently Python (FastAPI, Flask) and JavaScript/TypeScript/TSX (Express).
+
+Tree-sitter parsers are created per parse rather than pooled: smacker's `ParseCtx` can set a parser's cancellation flag after the parse returns, and a pooled parser would then fail its next file with "operation limit was hit". The failed files are reported in `IndexStats.FailedFiles`.
+
+### Batch Extraction (`extract`)
+
+`context-link extract` is the non-MCP entry point for tools that want one answer per call. It runs an incremental index, runs one hybrid search per `--query` (plus the security queries of `--profile threat-model`), sums scores per symbol, groups by file, drops tests/fixtures/vendored/migration paths (unless `--include-tests`), and packs the best files into `--budget-bytes`: full symbol bodies first, signature-only skeletons for files that did not fit. HTTP routes are returned as `entry_points`, and files that failed to index as `index.parse_failures`. Output is a single JSON document on stdout (`schema_version: 1`); exit code 2 means the index is unusable.
 
 ### Dependency Resolution
 

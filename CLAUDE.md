@@ -135,6 +135,7 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 3. Create adapter in `internal/indexer/adapters/<lang>.go` implementing `LanguageAdapter`
 4. Register in `buildLanguageRegistry()` in `cmd/context-link/main.go`
 5. Add fixtures in `testdata/langs/<lang>/` and update golden snapshots
+6. Optional: implement `GetRouteQuery() []byte` (`RouteQueryProvider`) with `queries/<lang>_routes.scm` to extract HTTP routes; handle the language in `internal/indexer/routes.go`
 
 ## Current Phase Status
 
@@ -144,4 +145,5 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
 - **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; indexer extracts FastAPI/Flask/Express definitions only — Gin, Django, Spring and client call sites are not extracted yet)
+- **Unreleased (v1.2.0 planned):** merged to master, not yet tagged — fresh Tree-sitter parser per parse (fixes silently dropped files, PR #3), HTTP route extraction for FastAPI/Flask/Express (PR #4), `extract` subcommand with JSON contract `schema_version: 1` (PR #5). Remaining: Gin/Django/Spring routes, goreleaser release (CL-4), paranoid migration to `extract`
 - **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both
