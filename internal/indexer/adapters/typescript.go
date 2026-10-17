@@ -14,6 +14,9 @@ var tsSymbolQuery []byte
 //go:embed queries/ts_deps.scm
 var tsDepsQuery []byte
 
+//go:embed queries/js_routes.scm
+var tsRoutesQuery []byte
+
 // TypeScriptAdapter implements the LanguageAdapter interface for pure TypeScript
 // files (.ts). It uses the TypeScript grammar which correctly handles advanced
 // generics but cannot parse JSX tags.
@@ -47,4 +50,9 @@ func (a *TypeScriptAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting TypeScript dependencies.
 func (a *TypeScriptAdapter) GetDependencyQuery() []byte {
 	return tsDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Express-style routes.
+func (a *TypeScriptAdapter) GetRouteQuery() []byte {
+	return tsRoutesQuery
 }

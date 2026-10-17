@@ -26,6 +26,7 @@ type IndexStats struct {
 	SymbolsExtracted    int           `json:"symbols_extracted"`
 	DepsExtracted       int           `json:"deps_extracted"`
 	DepsResolved        int           `json:"deps_resolved"`
+	RoutesExtracted     int           `json:"routes_extracted"`
 	EmbeddingsGenerated int           `json:"embeddings_generated"`
 	MemoriesOrphaned    int           `json:"memories_orphaned"`
 	MemoriesRelinked    int           `json:"memories_relinked"`
@@ -38,6 +39,7 @@ type fileResult struct {
 	file    DiscoveredFile
 	symbols []models.Symbol
 	deps    []ExtractedDep
+	routes  []ExtractedRoute
 }
 
 // Indexer orchestrates the full indexing pipeline: walk → parse → extract → store → embed.
@@ -117,7 +119,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	for _, f := range filesToIndex {
 		f := f // capture loop variable
 		g.Go(func() error {
-			symbols, deps, err := idx.processFile(gCtx, f, repoName)
+			symbols, deps, routes, err := idx.processFile(gCtx, f, repoName)
 			if err != nil {
 				slog.Warn("indexer: failed to process file",
 					"file", f.RelPath,
@@ -130,7 +132,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 			}
 
 			mu.Lock()
-			results = append(results, fileResult{file: f, symbols: symbols, deps: deps})
+			results = append(results, fileResult{file: f, symbols: symbols, deps: deps, routes: routes})
 			mu.Unlock()
 			return nil
 		})
@@ -161,6 +163,9 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		slog.Warn("indexer: failed to build symbol map, falling back to per-file lookups", "error", err)
 		symbolsByFile = make(map[string][]models.Symbol)
 	}
+
+	// Store HTTP routes, resolving handler names to the symbol IDs just inserted.
+	stats.RoutesExtracted = idx.storeRoutes(ctx, repoName, results, symbolsByFile)
 
 	// Phase 5: Resolve cross-file dependencies using already-extracted deps.
 	resolved, err := idx.resolveDependencies(ctx, repoName, results, symbolsByFile)
@@ -261,6 +266,9 @@ func (idx *Indexer) filterChangedFiles(
 		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
 			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbPath, "error", delErr)
 		}
+		if delErr := store.DeleteRoutesByFile(ctx, idx.db, repoName, dbPath, "definition"); delErr != nil {
+			slog.Warn("indexer: failed to delete routes for removed file", "file", dbPath, "error", delErr)
+		}
 		if delErr := store.DeleteFileByPath(ctx, idx.db, repoName, dbPath); delErr != nil {
 			slog.Warn("indexer: failed to delete file record", "file", dbPath, "error", delErr)
 		}
@@ -303,36 +311,43 @@ func (idx *Indexer) processFile(
 	ctx context.Context,
 	file DiscoveredFile,
 	repoName string,
-) ([]models.Symbol, []ExtractedDep, error) {
+) ([]models.Symbol, []ExtractedDep, []ExtractedRoute, error) {
 	adapter, ok := idx.registry.GetAdapter(file.Extension)
 	if !ok {
-		return nil, nil, fmt.Errorf("indexer: no adapter for extension %s", file.Extension)
+		return nil, nil, nil, fmt.Errorf("indexer: no adapter for extension %s", file.Extension)
 	}
 
 	source, err := os.ReadFile(file.Path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("indexer: failed to read %s: %w", file.Path, err)
+		return nil, nil, nil, fmt.Errorf("indexer: failed to read %s: %w", file.Path, err)
 	}
 
 	pool := idx.pools.GetPool(adapter)
 	tree, err := pool.Parse(ctx, source)
 	if err != nil {
-		return nil, nil, fmt.Errorf("indexer: failed to parse %s: %w", file.RelPath, err)
+		return nil, nil, nil, fmt.Errorf("indexer: failed to parse %s: %w", file.RelPath, err)
 	}
 
 	symbols, err := idx.extractor.ExtractSymbols(ctx, tree, source, adapter, repoName, file.RelPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("indexer: failed to extract symbols from %s: %w", file.RelPath, err)
+		return nil, nil, nil, fmt.Errorf("indexer: failed to extract symbols from %s: %w", file.RelPath, err)
 	}
 
 	deps, err := idx.extractor.ExtractDependencies(ctx, tree, source, adapter, file.RelPath)
 	if err != nil {
 		slog.Warn("indexer: failed to extract dependencies", "file", file.RelPath, "error", err)
-		// Non-fatal: return symbols without deps.
-		return symbols, nil, nil
+		// Non-fatal: continue without deps.
+		deps = nil
 	}
 
-	return symbols, deps, nil
+	routes, err := idx.extractor.ExtractRoutes(ctx, tree, source, adapter, file.RelPath)
+	if err != nil {
+		slog.Warn("indexer: failed to extract routes", "file", file.RelPath, "error", err)
+		// Non-fatal: continue without routes.
+		routes = nil
+	}
+
+	return symbols, deps, routes, nil
 }
 
 // storeFileResults persists the extracted symbols and raw dependencies for a file.
@@ -357,6 +372,11 @@ func (idx *Indexer) storeFileResults(
 	// Delete FTS entries before deleting symbols (FTS references symbol IDs).
 	if err := store.DeleteFTSByFile(ctx, idx.db, repoName, file.RelPath); err != nil {
 		slog.Warn("indexer: failed to delete FTS entries", "file", file.RelPath, "error", err)
+	}
+
+	// Drop stale routes; fresh ones are stored after symbol IDs exist.
+	if err := store.DeleteRoutesByFile(ctx, idx.db, repoName, file.RelPath, "definition"); err != nil {
+		return fmt.Errorf("indexer: failed to delete old routes for %s: %w", file.RelPath, err)
 	}
 
 	// Delete existing symbols for this file (will be re-inserted).

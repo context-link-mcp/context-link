@@ -221,6 +221,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  Files skipped:    %d\n", stats.FilesSkipped)
 	fmt.Fprintf(os.Stderr, "  Symbols extracted:    %d\n", stats.SymbolsExtracted)
 	fmt.Fprintf(os.Stderr, "  Dependencies:         %d\n", stats.DepsResolved)
+	fmt.Fprintf(os.Stderr, "  HTTP routes:          %d\n", stats.RoutesExtracted)
 	fmt.Fprintf(os.Stderr, "  Embeddings generated: %d\n", stats.EmbeddingsGenerated)
 	fmt.Fprintf(os.Stderr, "  Memories orphaned:    %d\n", stats.MemoriesOrphaned)
 	fmt.Fprintf(os.Stderr, "  Memories relinked:    %d\n", stats.MemoriesRelinked)
