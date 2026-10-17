@@ -255,6 +255,23 @@ If you switch embedding models or want to cleanly rebuild the database (bypassin
 ./bin/context-link index --project-root /path/to/your/project --force
 ```
 
+**Batch extraction for scripts and other tools (no MCP session):**
+
+```bash
+context-link extract --project-root /path/to/project \
+  --query "authentication and session handling" --profile threat-model --budget-bytes 50000
+```
+
+The JSON output (`schema_version: 1`) contains:
+
+| Field | Description |
+|---|---|
+| `index` | `files_discovered`, `files_indexed`, `symbols`, `languages` (files per language), and `parse_failures` — files that failed to index and are therefore missing from the context |
+| `entry_points` | HTTP route definitions (method, path, handler, file, line, framework) |
+| `files[]` | Best-ranked files: `path`, `tier` (`code` = full symbol bodies, `skeleton` = signatures only), `symbols`, `reason`, `score`, `content` |
+| `budget` | `limit_bytes` and `used_bytes` of the `files[].content` total |
+| `warnings` | e.g. excluded test matches, files that did not fit the budget |
+
 **Index multiple repos into the same database:**
 ```bash
 ./bin/context-link index --project-root /path/to/repo-a --repo-name repo-a
@@ -331,6 +348,23 @@ rm .context-link.db
 |  | `--vocab-path` | _(built-in)_ | Path to `vocab.txt` for the ONNX tokenizer |
 |  | `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library |
 
+
+**`extract` subcommand flags** (indexes incrementally, then prints one JSON document to stdout):
+
+| Category | Flag | Default | Description |
+|---|---|---|---|
+| **Query** | `--query` | _(none)_ | Natural-language query; repeat for several. At least one `--query` or a `--profile` is required |
+|  | `--profile` | _(none)_ | `threat-model` adds security-oriented queries and boosts HTTP entry-point handlers |
+| **Output** | `--budget-bytes` | `50000` | Limit for the summed size of `files[].content` |
+|  | `--max-symbols-per-file` | `3` | Maximum symbols returned per file |
+|  | `--include-tests` | `false` | Include tests, fixtures, vendored code and migrations (excluded by default) |
+|  | `--format` | `json` | Output format (only `json`) |
+| **Execution** | `--no-index` | `false` | Skip the index step and use the existing index |
+|  | `--workers` | `4` | Parallel workers for the index step |
+|  | `--repo-name` | Directory name | Repository name for multi-repo namespacing |
+| **Embeddings** _(Advanced)_ | `--model-path`, `--vocab-path`, `--ort-lib-path` | _(built-in)_ | Same as `index` |
+
+Exit codes: `0` ok, `1` usage error, `2` index unusable (callers can continue without code context). Logs go to stderr, so stdout is always a single JSON document.
 
 **`serve` subcommand flags:**
 
@@ -812,7 +846,9 @@ BFS through callers to show everything affected by changing a symbol. Groups res
 
 ### `find_http_routes`
 
-Discovers HTTP route definitions and call sites in the codebase. Supports Express, Gin, FastAPI, Flask, and similar frameworks. Matches route definitions to their call sites with confidence scoring.
+Discovers HTTP route definitions and call sites in the codebase and matches them with confidence scoring.
+
+**What the indexer detects today:** route *definitions* for FastAPI and Flask (`@router.get("/x")`, `@app.route("/x", methods=[...])`, `APIRouter(prefix=...)` / `Blueprint(url_prefix=...)` prefixes in the same file) and Express-style registrations in JavaScript/TypeScript (`app.get('/x', handler)`). Handlers are linked to their symbols. Not detected yet: Gin, Django, Spring, router prefixes applied in another file (`include_router(prefix=...)`), and client call sites — so `matches` is usually empty.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
