@@ -103,7 +103,7 @@
           "start_line": 9,
           "end_line": 11,
           "offset": 34,
-          "role": "outline",
+          "role": "match",
           "dependencies": []
         },
         {
@@ -128,7 +128,7 @@
         }
       ],
       "reason": "query: user authentication token",
-      "score": 0.016,
+      "score": 0.031,
       "content": "router = APIRouter(prefix=\"/api\")\ndef login(body: dict):\ndef get_user(user_id: int, token: str = Depends(verify_token)):\ndef list_routes():"
     }
   ],

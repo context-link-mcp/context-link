@@ -247,6 +247,7 @@ type ExtractedDep struct {
 	Source     string // import source path (for imports)
 	Symbol     string // called/extended/implemented symbol name
 	CallerFile string // file where the dependency originates
+	Line       int    // 1-based line of the capture, used to find the calling symbol
 }
 
 // ExtractDependencies runs the adapter's dependency query against the parsed
@@ -311,6 +312,7 @@ func (e *Extractor) processDependencyMatch(
 				"file", filePath, "capture", captureName)
 			continue
 		}
+		line := int(capture.Node.StartPoint().Row) + 1
 
 		switch captureName {
 		case "dependency.source":
@@ -320,6 +322,7 @@ func (e *Extractor) processDependencyMatch(
 				Kind:       "import",
 				Source:     importPath,
 				CallerFile: filePath,
+				Line:       line,
 			})
 
 		case "dependency.call":
@@ -327,6 +330,7 @@ func (e *Extractor) processDependencyMatch(
 				Kind:       "call",
 				Symbol:     content,
 				CallerFile: filePath,
+				Line:       line,
 			})
 
 		case "dependency.extends":
@@ -334,6 +338,7 @@ func (e *Extractor) processDependencyMatch(
 				Kind:       "extends",
 				Symbol:     content,
 				CallerFile: filePath,
+				Line:       line,
 			})
 
 		case "dependency.implements":
@@ -341,6 +346,7 @@ func (e *Extractor) processDependencyMatch(
 				Kind:       "implements",
 				Symbol:     content,
 				CallerFile: filePath,
+				Line:       line,
 			})
 		}
 	}

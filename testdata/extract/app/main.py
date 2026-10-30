@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.auth import verify_token
+from app.auth import hash_password, verify_token
 
 router = APIRouter(prefix="/api")
 
@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api")
 @router.post("/login")
 def login(body: dict):
     """Authenticate a user and return a session token."""
-    return {"token": "abc"}
+    return {"token": hash_password(body["password"], "salt")}
 
 
 @router.get("/users/{user_id}")

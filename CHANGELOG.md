@@ -13,6 +13,7 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ### Fixed
 - `testdata/extract` fixtures are checked out with LF line endings (`.gitattributes`), so `budget.used_bytes` in the golden files no longer depends on `core.autocrlf`.
+- Dependency edges were all attributed to the first symbol in the caller's file (often a module-level variable such as `logger` or `router`). Each call now belongs to the innermost symbol whose lines contain it, and calls in module-level statements produce no edge. On paranoid: 2,098 → 5,896 edges, 271 → 2,695 distinct callers. Affects `get_code_by_symbol`, `get_call_tree`, `get_symbol_usages`, `get_blast_radius`, `find_dead_code` and search enrichment. Existing indexes keep the old edges for unchanged files: run `index --force`.
 
 ## [1.2.0] - 2026-10-17
 
