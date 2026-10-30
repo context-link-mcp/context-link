@@ -262,15 +262,27 @@ context-link extract --project-root /path/to/project \
   --query "authentication and session handling" --profile threat-model --budget-bytes 50000
 ```
 
-The JSON output (`schema_version: 1`) contains:
+The JSON output (`schema_version: 2`) contains:
 
 | Field | Description |
 |---|---|
 | `index` | `files_discovered`, `files_indexed`, `symbols`, `languages` (files per language), and `parse_failures` — files that failed to index and are therefore missing from the context |
 | `entry_points` | HTTP route definitions (method, path, handler, file, line, framework) |
-| `files[]` | Best-ranked files: `path`, `tier` (`code` = full symbol bodies, `skeleton` = signatures only), `symbols`, `reason`, `score`, `content` |
+| `files[]` | Best-ranked files: `path`, `tier` (`code` = full symbol bodies, `skeleton` = signatures only), `symbols[]`, `reason`, `score`, `content` |
 | `budget` | `limit_bytes` and `used_bytes` of the `files[].content` total |
-| `warnings` | e.g. excluded test matches, files that did not fit the budget |
+| `warnings` | e.g. excluded test matches, files or dependencies that did not fit the budget |
+
+Each `files[].symbols[]` entry describes one symbol in `content`:
+
+| Field | Description |
+|---|---|
+| `name`, `qualified_name`, `kind` | Symbol identity |
+| `start_line`, `end_line` | 1-based lines in the source file, for `file:line` references |
+| `offset` | UTF-8 byte offset of the symbol's text in `content` (its body in `code` files, its signature line in `skeleton` files) |
+| `role` | `match` (ranked by a query or entry point), `dependency` (packed because a match calls it), `outline` (other signature in a skeleton file) |
+| `dependencies` | Resolved direct callees (`name`, `qualified_name`, `kind`, `file`, `start_line`, `end_line`), listed even when their code did not fit the budget. Always `[]` in skeleton files |
+
+Packing order: full bodies of the best matches, then the code of their direct dependencies (merged into the callee's file entry, or a new entry with `reason: "dependency of <caller>"`), then skeletons for matching files that did not fit.
 
 **Index multiple repos into the same database:**
 ```bash
@@ -356,7 +368,8 @@ rm .context-link.db
 | **Query** | `--query` | _(none)_ | Natural-language query; repeat for several. At least one `--query` or a `--profile` is required |
 |  | `--profile` | _(none)_ | `threat-model` adds security-oriented queries and boosts HTTP entry-point handlers |
 | **Output** | `--budget-bytes` | `50000` | Limit for the summed size of `files[].content` |
-|  | `--max-symbols-per-file` | `3` | Maximum symbols returned per file |
+|  | `--max-symbols-per-file` | `3` | Maximum ranked symbols per file (dependency code does not count) |
+|  | `--dependency-depth` | `1` | `1` packs the code of each match's direct dependencies within the budget; `0` lists them as references only |
 |  | `--include-tests` | `false` | Include tests, fixtures, vendored code and migrations (excluded by default) |
 |  | `--format` | `json` | Output format (only `json`) |
 | **Execution** | `--no-index` | `false` | Skip the index step and use the existing index |

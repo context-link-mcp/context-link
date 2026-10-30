@@ -1,0 +1,3 @@
+# extract golden files count content bytes (budget.used_bytes), so the
+# fixtures must have the same line endings on every platform.
+testdata/extract/** text eol=lf

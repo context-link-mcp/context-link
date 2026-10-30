@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "extract",
   "index": {
     "files_discovered": 4,
@@ -57,9 +57,36 @@
       "path": "app/main.py",
       "tier": "code",
       "symbols": [
-        "login",
-        "get_user",
-        "list_routes"
+        {
+          "name": "login",
+          "qualified_name": "login",
+          "kind": "function",
+          "start_line": 9,
+          "end_line": 11,
+          "offset": 0,
+          "role": "match",
+          "dependencies": []
+        },
+        {
+          "name": "get_user",
+          "qualified_name": "get_user",
+          "kind": "function",
+          "start_line": 15,
+          "end_line": 17,
+          "offset": 110,
+          "role": "match",
+          "dependencies": []
+        },
+        {
+          "name": "list_routes",
+          "qualified_name": "list_routes",
+          "kind": "function",
+          "start_line": 21,
+          "end_line": 22,
+          "offset": 258,
+          "role": "match",
+          "dependencies": []
+        }
       ],
       "reason": "entry point: GET /api/users/{user_id}",
       "score": 0.186,
@@ -69,8 +96,26 @@
       "path": "app/auth.py",
       "tier": "code",
       "symbols": [
-        "hash_password",
-        "verify_token"
+        {
+          "name": "hash_password",
+          "qualified_name": "hash_password",
+          "kind": "function",
+          "start_line": 4,
+          "end_line": 6,
+          "offset": 0,
+          "role": "match",
+          "dependencies": []
+        },
+        {
+          "name": "verify_token",
+          "qualified_name": "verify_token",
+          "kind": "function",
+          "start_line": 9,
+          "end_line": 11,
+          "offset": 170,
+          "role": "match",
+          "dependencies": []
+        }
       ],
       "reason": "query: user authentication token",
       "score": 0.093,
@@ -80,8 +125,26 @@
       "path": "web/server.js",
       "tier": "code",
       "symbols": [
-        "listOrders",
-        "requireAdmin"
+        {
+          "name": "listOrders",
+          "qualified_name": "listOrders",
+          "kind": "function",
+          "start_line": 4,
+          "end_line": 6,
+          "offset": 0,
+          "role": "match",
+          "dependencies": []
+        },
+        {
+          "name": "requireAdmin",
+          "qualified_name": "requireAdmin",
+          "kind": "function",
+          "start_line": 13,
+          "end_line": 15,
+          "offset": 51,
+          "role": "match",
+          "dependencies": []
+        }
       ],
       "reason": "entry point: GET /orders",
       "score": 0.078,

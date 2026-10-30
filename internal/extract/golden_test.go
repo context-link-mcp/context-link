@@ -46,6 +46,7 @@ func goldenResult(t *testing.T, opts Options) *Result {
 		ParseFailures:   stats.FailedFiles,
 	})
 	require.NoError(t, err)
+	assert.Equal(t, res.Budget.UsedBytes, usedBytes(res.Files), "used_bytes must equal the summed content size")
 	return res
 }
 

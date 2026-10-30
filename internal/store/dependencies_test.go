@@ -112,6 +112,64 @@ func TestGetDependenciesByCallee(t *testing.T) {
 	assert.Equal(t, aSym.ID, deps[0].CallerID)
 }
 
+func TestGetDirectDependencies(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	insertTestSymbol(t, db, "repo", "a", "a", "function", "src/a.ts")
+	insertTestSymbol(t, db, "repo", "b", "b", "function", "src/b.ts")
+	insertTestSymbol(t, db, "repo", "c", "c", "function", "src/c.ts")
+	insertTestSymbol(t, db, "repo", "lonely", "lonely", "function", "src/d.ts")
+	insertTestSymbol(t, db, "other", "x", "x", "function", "src/x.ts")
+
+	id := func(repo, name string) int64 {
+		s, err := GetSymbolByName(ctx, db, repo, name)
+		require.NoError(t, err)
+		return s.ID
+	}
+	a, b, c, lonely, x := id("repo", "a"), id("repo", "b"), id("repo", "c"), id("repo", "lonely"), id("other", "x")
+
+	require.NoError(t, BatchInsertDependencies(ctx, db, []models.Dependency{
+		{CallerID: a, CalleeID: c, Kind: "call"},
+		{CallerID: a, CalleeID: b, Kind: "call"},
+		{CallerID: a, CalleeID: b, Kind: "import"}, // same callee, second kind
+		{CallerID: c, CalleeID: b, Kind: "call"},   // b shared by a and c
+		{CallerID: a, CalleeID: a, Kind: "call"},   // recursion
+		{CallerID: a, CalleeID: x, Kind: "call"},   // callee in another repo
+	}))
+
+	names := func(syms []models.Symbol) []string {
+		out := make([]string, len(syms))
+		for i, s := range syms {
+			out[i] = s.Name
+		}
+		return out
+	}
+
+	tests := []struct {
+		name    string
+		callers []int64
+		want    map[int64][]string
+	}{
+		{"no callers", nil, map[int64][]string{}},
+		{"caller without dependencies", []int64{lonely}, map[int64][]string{}},
+		{"dedup, self-edge and other repo skipped", []int64{a}, map[int64][]string{a: {"b", "c"}}},
+		{"shared callee", []int64{a, c}, map[int64][]string{a: {"b", "c"}, c: {"b"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := GetDirectDependencies(ctx, db, "repo", tt.callers)
+			require.NoError(t, err)
+			gotNames := make(map[int64][]string, len(got))
+			for k, v := range got {
+				gotNames[k] = names(v)
+			}
+			assert.Equal(t, tt.want, gotNames)
+		})
+	}
+}
+
 func TestDeleteDependenciesByCallerFile(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
