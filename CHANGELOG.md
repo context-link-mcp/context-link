@@ -2,6 +2,18 @@
 
 All notable changes to context-link. Dates are release-tag dates. Versions before 1.0.0 were reconstructed from git history.
 
+## [Unreleased]
+
+### Changed
+- **Breaking:** `extract` output is now `schema_version: 2`. `files[].symbols` is a list of objects instead of names: `name`, `qualified_name`, `kind`, `start_line`, `end_line`, `offset` (byte offset in `content`), `role` (`match`, `dependency` or `outline`) and `dependencies` (resolved direct callees with file and lines).
+
+### Added
+- `extract` packs the code of each match's direct dependencies after the matches and before skeletons, within the budget; dependencies that did not fit stay listed as references and are counted in a warning. `--dependency-depth 0` lists dependencies without packing their code.
+- `store.GetDirectDependencies`: batch caller → direct callees lookup scoped by `repo_name`.
+
+### Fixed
+- `testdata/extract` fixtures are checked out with LF line endings (`.gitattributes`), so `budget.used_bytes` in the golden files no longer depends on `core.autocrlf`.
+
 ## [1.2.0] - 2026-10-17
 
 ### Added

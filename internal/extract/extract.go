@@ -8,6 +8,7 @@ package extract
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -19,7 +20,8 @@ import (
 )
 
 // SchemaVersion is the version of the Result JSON contract.
-const SchemaVersion = 1
+// Version 2 replaced files[].symbols names with SymbolRef objects.
+const SchemaVersion = 2
 
 // Profile names accepted by Options.Profile.
 const ProfileThreatModel = "threat-model"
@@ -53,6 +55,9 @@ type Options struct {
 	BudgetBytes       int    // limit for the summed size of files[].content
 	IncludeTests      bool   // keep tests, fixtures, vendored code and migrations
 	MaxSymbolsPerFile int
+	// SkipDependencyCode lists direct dependencies as references only instead
+	// of also packing their code (CLI: --dependency-depth 0).
+	SkipDependencyCode bool
 }
 
 // IndexInfo describes the index the extraction ran against. The caller fills
@@ -77,14 +82,53 @@ type EntryPoint struct {
 	Framework string `json:"framework"`
 }
 
+// Roles of a symbol in SymbolRef.Role.
+const (
+	RoleMatch      = "match"      // ranked by a query or an entry point
+	RoleDependency = "dependency" // packed because a match calls it
+	RoleOutline    = "outline"    // other signature in a skeleton file
+)
+
+// Separators between the symbol texts in FileEntry.Content.
+const (
+	codeSep     = "\n\n"
+	skeletonSep = "\n"
+)
+
+// DependencyRef points at a resolved direct callee of a symbol.
+type DependencyRef struct {
+	Name          string `json:"name"`
+	QualifiedName string `json:"qualified_name"`
+	Kind          string `json:"kind"`
+	File          string `json:"file"`
+	StartLine     int    `json:"start_line"`
+	EndLine       int    `json:"end_line"`
+}
+
+// SymbolRef describes one symbol whose text is part of FileEntry.Content.
+type SymbolRef struct {
+	Name          string `json:"name"`
+	QualifiedName string `json:"qualified_name"`
+	Kind          string `json:"kind"`
+	StartLine     int    `json:"start_line"` // 1-based line in the source file
+	EndLine       int    `json:"end_line"`
+	// Offset is the UTF-8 byte offset of the symbol's text in Content: the
+	// body in code files, the signature line in skeleton files.
+	Offset int    `json:"offset"`
+	Role   string `json:"role"`
+	// Dependencies lists every resolved direct callee, whether or not its
+	// code was packed. Always empty in skeleton files.
+	Dependencies []DependencyRef `json:"dependencies"`
+}
+
 // FileEntry is one file in the packed context.
 type FileEntry struct {
-	Path    string   `json:"path"`
-	Tier    string   `json:"tier"` // "code" (full symbol bodies) or "skeleton" (signatures)
-	Symbols []string `json:"symbols"`
-	Reason  string   `json:"reason"`
-	Score   float64  `json:"score"`
-	Content string   `json:"content"`
+	Path    string      `json:"path"`
+	Tier    string      `json:"tier"` // "code" (full symbol bodies) or "skeleton" (signatures)
+	Symbols []SymbolRef `json:"symbols"`
+	Reason  string      `json:"reason"`
+	Score   float64     `json:"score"`
+	Content string      `json:"content"`
 }
 
 // Budget reports how much of the size limit the contents used.
@@ -93,7 +137,7 @@ type Budget struct {
 	UsedBytes  int `json:"used_bytes"`
 }
 
-// Result is the extract command's JSON output (schema_version 1).
+// Result is the extract command's JSON output (schema_version 2).
 type Result struct {
 	SchemaVersion int          `json:"schema_version"`
 	Repository    string       `json:"repository"`
@@ -219,13 +263,18 @@ func Run(
 		res.Warnings = append(res.Warnings, "no matching symbols found")
 	}
 
-	res.Files, res.Budget, err = pack(ctx, db, opts, candidates)
+	var stats packStats
+	res.Files, res.Budget, stats, err = pack(ctx, db, opts, candidates, scores)
 	if err != nil {
 		return nil, err
 	}
-	if skipped := len(candidates) - len(res.Files); skipped > 0 {
+	if stats.skippedFiles > 0 {
 		res.Warnings = append(res.Warnings,
-			fmt.Sprintf("%d matching files did not fit the %d byte budget", skipped, opts.BudgetBytes))
+			fmt.Sprintf("%d matching files did not fit the %d byte budget", stats.skippedFiles, opts.BudgetBytes))
+	}
+	if stats.droppedDeps > 0 {
+		res.Warnings = append(res.Warnings,
+			fmt.Sprintf("%d dependencies did not fit the budget (listed as references only)", stats.droppedDeps))
 	}
 	return res, nil
 }
@@ -338,56 +387,219 @@ func groupByFile(symbols map[int64]models.Symbol, scores map[int64]*scored, opts
 	return candidates, excluded
 }
 
-// pack fills the budget: full symbol bodies for the best files first, then
-// signature-only skeletons for files that did not fit. Files that fit in
-// neither form are dropped.
-func pack(ctx context.Context, db *store.DB, opts Options, candidates []fileCandidate) ([]FileEntry, Budget, error) {
+// packedFile is a file entry under construction.
+type packedFile struct {
+	path, tier, reason string
+	score              float64
+	syms               []models.Symbol // in StartLine order
+	roles              map[int64]string
+}
+
+// packStats reports what pack had to leave out.
+type packStats struct {
+	skippedFiles int // matching files with no entry at all
+	droppedDeps  int // dependencies listed as references only for lack of budget
+}
+
+// pack fills the budget in three passes: full bodies of the best matches,
+// then the code of their direct dependencies, then signature-only skeletons
+// for matching files that did not fit. Files that fit in no form are dropped.
+func pack(
+	ctx context.Context,
+	db *store.DB,
+	opts Options,
+	candidates []fileCandidate,
+	scores map[int64]*scored,
+) ([]FileEntry, Budget, packStats, error) {
 	budget := Budget{LimitBytes: opts.BudgetBytes}
-	var files []FileEntry
+	var stats packStats
+	var order []*packedFile
+	byPath := make(map[string]*packedFile)
+	packed := make(map[int64]bool)  // symbols whose code is in an entry
+	matched := make(map[int64]bool) // matches packed in pass 1
 	var deferred []fileCandidate
 
+	var callerIDs []int64
+	for _, c := range candidates {
+		for _, s := range c.symbols {
+			callerIDs = append(callerIDs, s.ID)
+		}
+	}
+	deps, err := store.GetDirectDependencies(ctx, db, opts.RepoName, callerIDs)
+	if err != nil {
+		return nil, budget, stats, fmt.Errorf("extract: failed to load dependencies: %w", err)
+	}
+
+	// Pass 1: matches, code tier.
 	for _, c := range candidates {
 		syms := append([]models.Symbol(nil), c.symbols...)
 		sort.Slice(syms, func(i, j int) bool { return syms[i].StartLine < syms[j].StartLine })
-
-		var parts, names []string
-		for _, s := range syms {
-			parts = append(parts, s.CodeBlock)
-			names = append(names, s.Name)
+		size := 0
+		for i, s := range syms {
+			if i > 0 {
+				size += len(codeSep)
+			}
+			size += len(s.CodeBlock)
 		}
-		content := strings.Join(parts, "\n\n")
-		if budget.UsedBytes+len(content) > budget.LimitBytes {
+		if budget.UsedBytes+size > budget.LimitBytes {
 			deferred = append(deferred, c)
 			continue
 		}
-		budget.UsedBytes += len(content)
-		files = append(files, FileEntry{
-			Path: c.path, Tier: "code", Symbols: names,
-			Reason: c.reason, Score: round(c.score), Content: content,
-		})
+		budget.UsedBytes += size
+		f := &packedFile{path: c.path, tier: "code", reason: c.reason, score: c.score, syms: syms, roles: map[int64]string{}}
+		for _, s := range syms {
+			f.roles[s.ID] = RoleMatch
+			packed[s.ID] = true
+			matched[s.ID] = true
+		}
+		order = append(order, f)
+		byPath[c.path] = f
 	}
 
+	// Pass 2: direct dependencies of the packed matches, best caller first.
+	if !opts.SkipDependencyCode {
+		dropped := make(map[int64]bool)
+		var depIDs []int64
+		for _, c := range candidates {
+			for _, caller := range c.symbols {
+				if !matched[caller.ID] {
+					continue
+				}
+				for _, d := range deps[caller.ID] {
+					if packed[d.ID] || (!opts.IncludeTests && IsNoisePath(d.FilePath)) {
+						continue
+					}
+					f := byPath[d.FilePath]
+					size := len(d.CodeBlock)
+					if f != nil {
+						size += len(codeSep)
+					}
+					if budget.UsedBytes+size > budget.LimitBytes {
+						dropped[d.ID] = true
+						continue
+					}
+					budget.UsedBytes += size
+					if f == nil {
+						f = &packedFile{
+							path: d.FilePath, tier: "code", reason: "dependency of " + caller.Name,
+							score: scores[caller.ID].score, roles: map[int64]string{},
+						}
+						order = append(order, f)
+						byPath[d.FilePath] = f
+					}
+					f.syms = append(f.syms, d)
+					sort.SliceStable(f.syms, func(i, j int) bool { return f.syms[i].StartLine < f.syms[j].StartLine })
+					f.roles[d.ID] = RoleDependency
+					packed[d.ID] = true
+					depIDs = append(depIDs, d.ID)
+				}
+			}
+		}
+		stats.droppedDeps = len(dropped)
+
+		// Packed dependencies list their own callees too.
+		more, err := store.GetDirectDependencies(ctx, db, opts.RepoName, depIDs)
+		if err != nil {
+			return nil, budget, stats, fmt.Errorf("extract: failed to load dependencies: %w", err)
+		}
+		maps.Copy(deps, more)
+	}
+
+	// Pass 3: skeletons for matching files that did not fit as code.
 	for _, c := range deferred {
+		if byPath[c.path] != nil {
+			continue // already present with dependency code
+		}
 		all, err := store.GetSymbolsByFile(ctx, db, opts.RepoName, c.path)
 		if err != nil {
-			return nil, budget, fmt.Errorf("extract: failed to load symbols for %s: %w", c.path, err)
+			return nil, budget, stats, fmt.Errorf("extract: failed to load symbols for %s: %w", c.path, err)
 		}
-		var lines, names []string
-		for _, s := range all {
-			lines = append(lines, tools.ExtractSignature(s.CodeBlock))
-			names = append(names, s.Name)
+		size := 0
+		for i, s := range all {
+			if i > 0 {
+				size += len(skeletonSep)
+			}
+			size += len(tools.ExtractSignature(s.CodeBlock))
 		}
-		content := strings.Join(lines, "\n")
-		if len(lines) == 0 || budget.UsedBytes+len(content) > budget.LimitBytes {
+		if len(all) == 0 || budget.UsedBytes+size > budget.LimitBytes {
 			continue
 		}
-		budget.UsedBytes += len(content)
-		files = append(files, FileEntry{
-			Path: c.path, Tier: "skeleton", Symbols: names,
-			Reason: c.reason, Score: round(c.score), Content: content,
-		})
+		budget.UsedBytes += size
+		f := &packedFile{path: c.path, tier: "skeleton", reason: c.reason, score: c.score, syms: all, roles: map[int64]string{}}
+		for _, s := range all {
+			f.roles[s.ID] = RoleOutline
+		}
+		for _, s := range c.symbols {
+			f.roles[s.ID] = RoleMatch
+		}
+		order = append(order, f)
+		byPath[c.path] = f
 	}
-	return files, budget, nil
+
+	for _, c := range candidates {
+		if byPath[c.path] == nil {
+			stats.skippedFiles++
+		}
+	}
+
+	files := make([]FileEntry, 0, len(order))
+	for _, f := range order {
+		files = append(files, f.entry(deps))
+	}
+	return files, budget, stats, nil
+}
+
+// entry renders a packed file with its content and symbol references.
+func (f *packedFile) entry(deps map[int64][]models.Symbol) FileEntry {
+	parts := make([]string, len(f.syms))
+	for i, s := range f.syms {
+		parts[i] = s.CodeBlock
+		if f.tier == "skeleton" {
+			parts[i] = tools.ExtractSignature(s.CodeBlock)
+		}
+	}
+	sep := codeSep
+	if f.tier == "skeleton" {
+		sep = skeletonSep
+	}
+	content, offsets := buildContent(parts, sep)
+
+	refs := make([]SymbolRef, len(f.syms))
+	for i, s := range f.syms {
+		depRefs := []DependencyRef{}
+		if f.tier == "code" {
+			for _, d := range deps[s.ID] {
+				depRefs = append(depRefs, DependencyRef{
+					Name: d.Name, QualifiedName: d.QualifiedName, Kind: d.Kind,
+					File: d.FilePath, StartLine: d.StartLine, EndLine: d.EndLine,
+				})
+			}
+		}
+		refs[i] = SymbolRef{
+			Name: s.Name, QualifiedName: s.QualifiedName, Kind: s.Kind,
+			StartLine: s.StartLine, EndLine: s.EndLine,
+			Offset: offsets[i], Role: f.roles[s.ID], Dependencies: depRefs,
+		}
+	}
+	return FileEntry{
+		Path: f.path, Tier: f.tier, Symbols: refs,
+		Reason: f.reason, Score: round(f.score), Content: content,
+	}
+}
+
+// buildContent joins parts with sep and returns the result plus the byte
+// offset of each part in it.
+func buildContent(parts []string, sep string) (string, []int) {
+	var b strings.Builder
+	offsets := make([]int, len(parts))
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		offsets[i] = b.Len()
+		b.WriteString(p)
+	}
+	return b.String(), offsets
 }
 
 func round(f float64) float64 {

@@ -54,6 +54,7 @@ var (
 	flagExtractNoIndex  bool
 	flagExtractWorkers  int
 	flagExtractRepoName string
+	flagExtractDepDepth int
 )
 
 var extractCmd = &cobra.Command{
@@ -75,6 +76,7 @@ func registerExtractFlags() {
 	f.IntVar(&flagExtractBudget, "budget-bytes", extract.DefaultBudgetBytes, "limit for the summed size of files[].content")
 	f.BoolVar(&flagExtractTests, "include-tests", false, "include tests, fixtures, vendored code and migrations")
 	f.IntVar(&flagExtractPerFile, "max-symbols-per-file", extract.DefaultMaxSymbolsPerFile, "maximum symbols returned per file")
+	f.IntVar(&flagExtractDepDepth, "dependency-depth", 1, "0: list direct dependencies as references only; 1: also pack their code")
 	f.StringVar(&flagExtractFormat, "format", "json", "output format (only json)")
 	f.BoolVar(&flagExtractNoIndex, "no-index", false, "skip the incremental index step and use the existing index")
 	f.IntVar(&flagExtractWorkers, "workers", 4, "parallel workers for the index step")
@@ -97,6 +99,9 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	}
 	if len(flagExtractQueries) == 0 && flagExtractProfile == "" {
 		return &exitError{exitUsage, errors.New("at least one --query or a --profile is required")}
+	}
+	if flagExtractDepDepth != 0 && flagExtractDepDepth != 1 {
+		return &exitError{exitUsage, fmt.Errorf("unsupported --dependency-depth %d (want 0 or 1)", flagExtractDepDepth)}
 	}
 
 	cfg, err := config.Load(flagConfigFile)
@@ -161,12 +166,13 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	}
 
 	res, err := extract.Run(ctx, db, embedder, vectorstore.NewVectorCache(repoName), extract.Options{
-		RepoName:          repoName,
-		Queries:           flagExtractQueries,
-		Profile:           flagExtractProfile,
-		BudgetBytes:       flagExtractBudget,
-		IncludeTests:      flagExtractTests,
-		MaxSymbolsPerFile: flagExtractPerFile,
+		RepoName:           repoName,
+		Queries:            flagExtractQueries,
+		Profile:            flagExtractProfile,
+		BudgetBytes:        flagExtractBudget,
+		IncludeTests:       flagExtractTests,
+		MaxSymbolsPerFile:  flagExtractPerFile,
+		SkipDependencyCode: flagExtractDepDepth == 0,
 	}, info)
 	if err != nil {
 		return &exitError{exitIndexUnusable, err}

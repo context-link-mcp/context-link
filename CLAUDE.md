@@ -37,7 +37,7 @@ CGO_ENABLED=1 go test ./... -count=1
 # Start MCP server
 ./bin/context-link.exe serve --project-root .
 
-# Batch extraction for other tools (one JSON document on stdout; exit 0 ok, 1 usage, 2 index unusable)
+# Batch extraction for other tools (one JSON document, schema_version 2, on stdout; exit 0 ok, 1 usage, 2 index unusable)
 ./bin/context-link.exe extract --project-root . --query "auth" --profile threat-model
 
 # Update snapshot golden files after changing .scm queries or extractors
@@ -123,7 +123,7 @@ internal/tools/architecture.go     read_architecture_rules tool
 internal/tools/timeout.go          WithTimeout middleware for tool handlers
 internal/store/routes.go           Route CRUD, filtering, path normalization, confidence matching
 internal/indexer/routes.go         Route extraction (FastAPI/Flask/Express) via adapters' optional GetRouteQuery()
-internal/extract/extract.go        `extract` command core: multi-query hybrid search, test filtering, budget packing, entry points (JSON schema_version 1)
+internal/extract/extract.go        `extract` command core: multi-query hybrid search, test filtering, budget packing (matches → direct dependency code → skeletons), symbol lines/offsets, entry points (JSON schema_version 2)
 cmd/context-link/extract.go        `extract` subcommand (flags, incremental index, exit codes)
 internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index)
 ```
@@ -145,5 +145,6 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 4 (Memory):** Complete — save/get memories, stale detection, orphan recovery
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
 - **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; indexer extracts FastAPI/Flask/Express definitions only — Gin, Django, Spring and client call sites are not extracted yet)
-- **Unreleased (v1.2.0 planned):** merged to master, not yet tagged — fresh Tree-sitter parser per parse (fixes silently dropped files, PR #3), HTTP route extraction for FastAPI/Flask/Express (PR #4), `extract` subcommand with JSON contract `schema_version: 1` (PR #5). Remaining: Gin/Django/Spring routes, goreleaser release (CL-4), paranoid migration to `extract`
+- **v1.2.0:** Tagged — fresh Tree-sitter parser per parse (fixes silently dropped files, PR #3), HTTP route extraction for FastAPI/Flask/Express (PR #4), `extract` subcommand with JSON contract `schema_version: 1` (PR #5)
+- **Unreleased (v1.3.0 planned):** `extract` schema_version 2 (CL-5) — `files[].symbols[]` objects with `start_line`/`end_line`/`offset`/`role`/`dependencies`, direct dependency code packed within the budget, `--dependency-depth 0|1`. Remaining: dependency edges are attributed to the first symbol in the caller's file (indexer.go `resolveDependencies`), Gin/Django/Spring routes, paranoid migration to `extract`
 - **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both

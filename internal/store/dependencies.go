@@ -143,6 +143,54 @@ func GetCalleeNamesForSymbols(ctx context.Context, db *DB, callerIDs []int64) (m
 	return result, rows.Err()
 }
 
+// GetDirectDependencies returns caller ID → resolved direct callees for the
+// given callers, scoped to one repo. Callees are deduplicated per caller (an
+// edge may exist with several kinds), self-edges are skipped, and each list is
+// ordered by file path and start line. Callers without callees are absent.
+func GetDirectDependencies(ctx context.Context, db *DB, repoName string, callerIDs []int64) (map[int64][]models.Symbol, error) {
+	result := make(map[int64][]models.Symbol)
+	if len(callerIDs) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, len(callerIDs))
+	args := make([]any, 0, len(callerIDs)+1)
+	for i, id := range callerIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, repoName)
+
+	query := fmt.Sprintf(
+		`SELECT DISTINCT d.caller_id, s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+		        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+		 FROM dependencies d
+		 JOIN symbols s ON s.id = d.callee_id
+		 WHERE d.caller_id IN (%s) AND s.repo_name = ? AND d.callee_id != d.caller_id
+		 ORDER BY d.caller_id, s.file_path, s.start_line, s.id`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to get direct dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var callerID int64
+		var s models.Symbol
+		if err := rows.Scan(
+			&callerID, &s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+			&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: failed to scan direct dependency row: %w", err)
+		}
+		result[callerID] = append(result[callerID], s)
+	}
+	return result, rows.Err()
+}
+
 // scanDependencies scans multiple dependency rows.
 func scanDependencies(rows interface{ Next() bool; Scan(...any) error; Err() error }) ([]models.Dependency, error) {
 	var deps []models.Dependency
