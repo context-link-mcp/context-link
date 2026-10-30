@@ -111,3 +111,62 @@ func TestResolveDependenciesAttributesCallsToEnclosingSymbol(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, callers, 2, "module-level print(helper()) has no calling symbol")
 }
+
+// TestReresolveMigrationForcesFullReindex checks that after migration 007 the
+// next normal index re-processes every file and rebuilds the edges, and that
+// memories end up linked to the re-indexed symbols and not stale.
+func TestReresolveMigrationForcesFullReindex(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	registry := NewLanguageRegistry()
+	require.NoError(t, registry.Register(adapters.NewPythonAdapter()))
+	root := t.TempDir()
+	writeGoFile(t, root, "app.py", callerAttributionSource)
+	writeGoFile(t, root, "other.py", "def other():\n    return helper()\n")
+	idx := NewIndexer(registry, db, 1, nil)
+
+	_, err := idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+	helper, err := store.GetSymbolByName(ctx, db, "repo", "helper")
+	require.NoError(t, err)
+	_, err = store.SaveMemory(ctx, db, &models.Memory{
+		SymbolID: &helper.ID, Note: "returns a constant", Author: "agent",
+		LastKnownSymbol: "helper", LastKnownFile: "app.py",
+	})
+	require.NoError(t, err)
+
+	// Simulate an index built before the migration existed, then upgrade.
+	_, err = db.ExecContext(ctx, `DELETE FROM schema_version WHERE filename = '007_reresolve_dependencies.sql'`)
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(db))
+
+	var edges int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dependencies`).Scan(&edges))
+	assert.Zero(t, edges, "migration drops the old edges")
+	hashes, err := store.GetFileHashIndex(ctx, db, "repo")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"app.py": "", "other.py": ""}, hashes)
+
+	stats, err := idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.FilesIndexed, "every file is re-processed")
+	assert.Zero(t, stats.FilesUnchanged)
+	assert.Equal(t, 1, stats.MemoriesRelinked)
+
+	helper, err = store.GetSymbolByName(ctx, db, "repo", "helper")
+	require.NoError(t, err)
+	callers, err := store.GetDependenciesByCallee(ctx, db, helper.ID)
+	require.NoError(t, err)
+	assert.Len(t, callers, 3, "Service.run, handler and other")
+
+	mems, err := store.GetMemoriesBySymbolName(ctx, db, "repo", "helper", 0, 10)
+	require.NoError(t, err)
+	require.Len(t, mems, 1, "memory stays linked to the re-indexed symbol")
+	assert.False(t, mems[0].IsStale)
+
+	stats, err = idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+	assert.Zero(t, stats.FilesIndexed, "hashes are restored, so the next index is incremental again")
+}
