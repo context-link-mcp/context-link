@@ -65,7 +65,16 @@
           "end_line": 11,
           "offset": 0,
           "role": "match",
-          "dependencies": []
+          "dependencies": [
+            {
+              "name": "hash_password",
+              "qualified_name": "hash_password",
+              "kind": "function",
+              "file": "app/auth.py",
+              "start_line": 4,
+              "end_line": 6
+            }
+          ]
         },
         {
           "name": "get_user",
@@ -73,7 +82,7 @@
           "kind": "function",
           "start_line": 15,
           "end_line": 17,
-          "offset": 110,
+          "offset": 144,
           "role": "match",
           "dependencies": []
         },
@@ -83,14 +92,14 @@
           "kind": "function",
           "start_line": 21,
           "end_line": 22,
-          "offset": 258,
+          "offset": 292,
           "role": "match",
           "dependencies": []
         }
       ],
       "reason": "entry point: GET /api/users/{user_id}",
-      "score": 0.186,
-      "content": "def login(body: dict):\n    \"\"\"Authenticate a user and return a session token.\"\"\"\n    return {\"token\": \"abc\"}\n\ndef get_user(user_id: int, token: str = Depends(verify_token)):\n    \"\"\"Return a user record; requires a valid token.\"\"\"\n    return {\"id\": user_id}\n\ndef list_routes():\n    return []"
+      "score": 0.202,
+      "content": "def login(body: dict):\n    \"\"\"Authenticate a user and return a session token.\"\"\"\n    return {\"token\": hash_password(body[\"password\"], \"salt\")}\n\ndef get_user(user_id: int, token: str = Depends(verify_token)):\n    \"\"\"Return a user record; requires a valid token.\"\"\"\n    return {\"id\": user_id}\n\ndef list_routes():\n    return []"
     },
     {
       "path": "app/auth.py",
@@ -153,7 +162,7 @@
   ],
   "budget": {
     "limit_bytes": 50000,
-    "used_bytes": 701
+    "used_bytes": 735
   },
   "warnings": [
     "1 matches in tests, fixtures, vendored code or migrations were excluded (use --include-tests)"

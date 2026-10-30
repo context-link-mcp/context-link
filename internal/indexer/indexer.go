@@ -433,8 +433,12 @@ func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, re
 			if !ok {
 				continue
 			}
+			caller, ok := enclosingSymbol(callerSymbols, d.Line)
+			if !ok {
+				continue // module-level statement: no calling symbol
+			}
 			allDeps = append(allDeps, models.Dependency{
-				CallerID: callerSymbols[0].ID,
+				CallerID: caller.ID,
 				CalleeID: calleeID,
 				Kind:     d.Kind,
 			})
@@ -447,6 +451,24 @@ func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, re
 	}
 
 	return len(allDeps), nil
+}
+
+// enclosingSymbol returns the innermost symbol whose line range contains line:
+// the smallest span, and on a tie the one that starts last, then the first in
+// syms. It reports false when no symbol contains the line.
+func enclosingSymbol(syms []models.Symbol, line int) (models.Symbol, bool) {
+	var best models.Symbol
+	found := false
+	for _, s := range syms {
+		if line < s.StartLine || line > s.EndLine {
+			continue
+		}
+		span, bestSpan := s.EndLine-s.StartLine, best.EndLine-best.StartLine
+		if !found || span < bestSpan || (span == bestSpan && s.StartLine > best.StartLine) {
+			best, found = s, true
+		}
+	}
+	return best, found
 }
 
 // relinkOrphanedMemories scans newly indexed symbols and re-links any orphaned
