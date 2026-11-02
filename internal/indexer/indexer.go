@@ -149,10 +149,15 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("indexer: parallel processing failed: %w", err)
 	}
+	// A cancelled context surfaces above only as per-file errors; fail the run.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("indexer: indexing interrupted: %w", err)
+	}
 
 	// Phase 4: Store results in database (single writer).
 	// Re-inserted symbols get new IDs, so first drop every edge touching the
 	// changed files and keep the inbound ones by callee name for Phase 5.
+	// This must run before storeFileResults, which deletes those edges.
 	for _, r := range results {
 		in, err := store.DetachFileDependencies(ctx, idx.db, repoName, r.file.RelPath)
 		if err != nil {
@@ -161,6 +166,10 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		}
 		inbound = append(inbound, in...)
 	}
+
+	// Each file is replaced atomically with a pending (empty) hash; the real
+	// hashes are committed only after phases 5-7, so an interrupted run is retried.
+	indexedHashes := make(map[string]string, len(results))
 	for _, r := range results {
 		if err := idx.storeFileResults(ctx, r.file, r.symbols, r.deps, repoName); err != nil {
 			slog.Warn("indexer: failed to store results",
@@ -171,9 +180,13 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 			stats.FailedFiles = append(stats.FailedFiles, IndexFailure{Path: r.file.RelPath, Error: err.Error()})
 			continue
 		}
+		indexedHashes[r.file.RelPath] = r.file.ContentHash
 		stats.FilesIndexed++
 		stats.SymbolsExtracted += len(r.symbols)
 		stats.DepsExtracted += len(r.deps)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("indexer: indexing interrupted: %w", err)
 	}
 
 	// Pre-compute symbol map for phases 5-7 (single query instead of 3×N per-file lookups).
@@ -189,7 +202,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	// Phase 5: Resolve cross-file dependencies using already-extracted deps.
 	resolved, err := idx.resolveDependencies(ctx, repoName, results, symbolsByFile, inbound)
 	if err != nil {
-		slog.Warn("indexer: dependency resolution partially failed", "error", err)
+		return nil, fmt.Errorf("indexer: dependency resolution failed: %w", err)
 	}
 	stats.DepsResolved = resolved
 
@@ -209,6 +222,15 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	}
 	relinked := idx.relinkOrphanedMemories(ctx, repoName, indexedPathsForRelink, symbolsByFile)
 	stats.MemoriesRelinked = relinked
+
+	// Commit the content hashes last: until now the files indexed by this run
+	// carry an empty hash, so an interrupted run re-indexes them next time.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("indexer: indexing interrupted: %w", err)
+	}
+	if err := store.SetFileHashes(ctx, idx.db, repoName, indexedHashes); err != nil {
+		return nil, fmt.Errorf("indexer: failed to commit file hashes: %w", err)
+	}
 
 	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged - stats.FilesDeleted
 	if stats.FilesSkipped < 0 {
@@ -375,7 +397,10 @@ func (idx *Indexer) processFile(
 	return symbols, deps, routes, nil
 }
 
-// storeFileResults persists the extracted symbols and raw dependencies for a file.
+// storeFileResults atomically replaces a file's symbols, FTS rows, embeddings,
+// edges and route definitions. The file record is written with an empty
+// (pending) hash; IndexRepo commits the real hash once the run completes.
+// Fresh routes and edges are stored after all files' symbol IDs exist.
 func (idx *Indexer) storeFileResults(
 	ctx context.Context,
 	file DiscoveredFile,
@@ -383,37 +408,14 @@ func (idx *Indexer) storeFileResults(
 	deps []ExtractedDep,
 	repoName string,
 ) error {
-	// Upsert file record.
 	modelFile := models.File{
-		RepoName:    repoName,
-		Path:        file.RelPath,
-		ContentHash: file.ContentHash,
-		SizeBytes:   file.SizeBytes,
+		RepoName:  repoName,
+		Path:      file.RelPath,
+		SizeBytes: file.SizeBytes,
 	}
-	if err := store.UpsertFile(ctx, idx.db, &modelFile); err != nil {
-		return fmt.Errorf("indexer: failed to upsert file %s: %w", file.RelPath, err)
+	if err := store.ReplaceFileIndex(ctx, idx.db, &modelFile, symbols); err != nil {
+		return fmt.Errorf("indexer: failed to store %s: %w", file.RelPath, err)
 	}
-
-	// Delete FTS entries before deleting symbols (FTS references symbol IDs).
-	if err := store.DeleteFTSByFile(ctx, idx.db, repoName, file.RelPath); err != nil {
-		slog.Warn("indexer: failed to delete FTS entries", "file", file.RelPath, "error", err)
-	}
-
-	// Drop stale routes; fresh ones are stored after symbol IDs exist.
-	if err := store.DeleteRoutesByFile(ctx, idx.db, repoName, file.RelPath, "definition"); err != nil {
-		return fmt.Errorf("indexer: failed to delete old routes for %s: %w", file.RelPath, err)
-	}
-
-	// Delete existing symbols for this file (will be re-inserted).
-	if err := store.DeleteSymbolsByFile(ctx, idx.db, repoName, file.RelPath); err != nil {
-		return fmt.Errorf("indexer: failed to delete old symbols for %s: %w", file.RelPath, err)
-	}
-
-	// Batch insert symbols.
-	if err := store.BatchInsertSymbols(ctx, idx.db, symbols); err != nil {
-		return fmt.Errorf("indexer: failed to insert symbols for %s: %w", file.RelPath, err)
-	}
-
 	return nil
 }
 
