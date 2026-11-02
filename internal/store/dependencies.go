@@ -99,70 +99,6 @@ func DeleteDependenciesByCallerFile(ctx context.Context, db *DB, repoName, fileP
 	return nil
 }
 
-// InboundDependency is an edge into a symbol that is about to be deleted,
-// kept by callee name so it can be resolved again once the file's symbols
-// are re-inserted (or left unresolved if the name no longer exists).
-type InboundDependency struct {
-	CallerID   int64
-	CalleeName string
-	Kind       string
-}
-
-// DetachFileDependencies deletes every dependency edge that starts or ends at
-// a symbol in filePath and returns the edges that came in from symbols in
-// other files. Call it before deleting the file's symbols: symbol IDs change
-// on re-insert, so those inbound edges would otherwise dangle (or, with
-// foreign keys on, be cascaded away) until the caller's file changes too.
-func DetachFileDependencies(ctx context.Context, db *DB, repoName, filePath string) ([]InboundDependency, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	rows, err := tx.QueryContext(ctx,
-		`SELECT d.caller_id, callee.name, d.kind
-		 FROM dependencies d
-		 JOIN symbols callee ON callee.id = d.callee_id
-		 JOIN symbols caller ON caller.id = d.caller_id
-		 WHERE callee.repo_name = ? AND callee.file_path = ?
-		   AND NOT (caller.repo_name = ? AND caller.file_path = ?)
-		 ORDER BY d.id`,
-		repoName, filePath, repoName, filePath,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get inbound dependencies for %s/%s: %w", repoName, filePath, err)
-	}
-	var inbound []InboundDependency
-	for rows.Next() {
-		var in InboundDependency
-		if err := rows.Scan(&in.CallerID, &in.CalleeName, &in.Kind); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: failed to scan inbound dependency row: %w", err)
-		}
-		inbound = append(inbound, in)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("store: failed to read inbound dependencies for %s/%s: %w", repoName, filePath, err)
-	}
-	rows.Close()
-
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM dependencies
-		 WHERE caller_id IN (SELECT id FROM symbols WHERE repo_name = ? AND file_path = ?)
-		    OR callee_id IN (SELECT id FROM symbols WHERE repo_name = ? AND file_path = ?)`,
-		repoName, filePath, repoName, filePath,
-	); err != nil {
-		return nil, fmt.Errorf("store: failed to delete dependencies for %s/%s: %w", repoName, filePath, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: failed to commit dependency detach for %s/%s: %w", repoName, filePath, err)
-	}
-	return inbound, nil
-}
-
 // GetCalleeNamesForSymbols returns a map of caller ID → []callee name for all given caller IDs.
 // Used during keyword enrichment to add function call names to embedding and FTS5 data.
 // Single batch query with IN clause for efficiency during bulk indexing.
@@ -256,7 +192,11 @@ func GetDirectDependencies(ctx context.Context, db *DB, repoName string, callerI
 }
 
 // scanDependencies scans multiple dependency rows.
-func scanDependencies(rows interface{ Next() bool; Scan(...any) error; Err() error }) ([]models.Dependency, error) {
+func scanDependencies(rows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}) ([]models.Dependency, error) {
 	var deps []models.Dependency
 	for rows.Next() {
 		var d models.Dependency

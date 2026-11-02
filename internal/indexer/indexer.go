@@ -18,20 +18,20 @@ import (
 
 // IndexStats reports the results of an indexing run.
 type IndexStats struct {
-	FilesDiscovered     int           `json:"files_discovered"`
-	FilesIndexed        int           `json:"files_indexed"`
-	FilesSkipped        int           `json:"files_skipped"`
-	FilesUnchanged      int           `json:"files_unchanged"`
-	FilesDeleted        int           `json:"files_deleted"`
-	SymbolsExtracted    int           `json:"symbols_extracted"`
-	DepsExtracted       int           `json:"deps_extracted"`
-	DepsResolved        int           `json:"deps_resolved"`
-	RoutesExtracted     int           `json:"routes_extracted"`
-	EmbeddingsGenerated int           `json:"embeddings_generated"`
-	MemoriesOrphaned    int           `json:"memories_orphaned"`
-	MemoriesRelinked    int           `json:"memories_relinked"`
-	Duration            time.Duration `json:"duration"`
-	Errors              int           `json:"errors"`
+	FilesDiscovered     int            `json:"files_discovered"`
+	FilesIndexed        int            `json:"files_indexed"`
+	FilesSkipped        int            `json:"files_skipped"`
+	FilesUnchanged      int            `json:"files_unchanged"`
+	FilesDeleted        int            `json:"files_deleted"`
+	SymbolsExtracted    int            `json:"symbols_extracted"`
+	DepsExtracted       int            `json:"deps_extracted"`
+	DepsResolved        int            `json:"deps_resolved"`
+	RoutesExtracted     int            `json:"routes_extracted"`
+	EmbeddingsGenerated int            `json:"embeddings_generated"`
+	MemoriesOrphaned    int            `json:"memories_orphaned"`
+	MemoriesRelinked    int            `json:"memories_relinked"`
+	Duration            time.Duration  `json:"duration"`
+	Errors              int            `json:"errors"`
 	FailedFiles         []IndexFailure `json:"failed_files,omitempty"`
 }
 
@@ -102,7 +102,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	slog.Info("indexer: walk complete", "files_discovered", stats.FilesDiscovered)
 
 	// Phase 2: Determine which files need re-indexing and remove deleted files.
-	filesToIndex, unchanged, deleted, orphaned, inbound, err := idx.filterChangedFiles(ctx, result.Files, repoName)
+	filesToIndex, unchanged, deleted, orphaned, err := idx.filterChangedFiles(ctx, result.Files, repoName)
 	if err != nil {
 		return nil, fmt.Errorf("indexer: failed to filter changed files: %w", err)
 	}
@@ -155,21 +155,25 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	}
 
 	// Phase 4: Store results in database (single writer).
-	// Re-inserted symbols get new IDs, so first drop every edge touching the
-	// changed files and keep the inbound ones by callee name for Phase 5.
-	// This must run before storeFileResults, which deletes those edges.
+	// Re-inserted symbols get new IDs and edges are resolved by name, so the
+	// files whose edges must be resolved again are marked first: callers of
+	// names the changed files gain or lose (here), and callers with an edge
+	// into a changed file (in the transaction that replaces it). The marks are
+	// persisted, so Phase 5 of this run or of a later one restores those edges
+	// even if this run stops in between. Each file is replaced atomically with
+	// a pending (empty) hash; the real hashes are committed only after phases
+	// 5-7, so an interrupted run is retried.
+	newNames := make(map[string][]string, len(results))
+	reindexed := make(map[string]bool, len(results))
 	for _, r := range results {
-		in, err := store.DetachFileDependencies(ctx, idx.db, repoName, r.file.RelPath)
-		if err != nil {
-			slog.Warn("indexer: failed to detach dependencies", "file", r.file.RelPath, "error", err)
-			continue
-		}
-		inbound = append(inbound, in...)
+		newNames[r.file.RelPath] = symbolNames(r.symbols)
+		reindexed[r.file.RelPath] = true
 	}
-
-	// Each file is replaced atomically with a pending (empty) hash; the real
-	// hashes are committed only after phases 5-7, so an interrupted run is retried.
+	if err := store.MarkNameCallers(ctx, idx.db, repoName, newNames, reindexed); err != nil {
+		return nil, fmt.Errorf("indexer: failed to mark callers for re-resolution: %w", err)
+	}
 	indexedHashes := make(map[string]string, len(results))
+	stored := make([]fileResult, 0, len(results))
 	for _, r := range results {
 		if err := idx.storeFileResults(ctx, r.file, r.symbols, r.deps, repoName); err != nil {
 			slog.Warn("indexer: failed to store results",
@@ -181,6 +185,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 			continue
 		}
 		indexedHashes[r.file.RelPath] = r.file.ContentHash
+		stored = append(stored, r)
 		stats.FilesIndexed++
 		stats.SymbolsExtracted += len(r.symbols)
 		stats.DepsExtracted += len(r.deps)
@@ -199,8 +204,9 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	// Store HTTP routes, resolving handler names to the symbol IDs just inserted.
 	stats.RoutesExtracted = idx.storeRoutes(ctx, repoName, results, symbolsByFile)
 
-	// Phase 5: Resolve cross-file dependencies using already-extracted deps.
-	resolved, err := idx.resolveDependencies(ctx, repoName, results, symbolsByFile, inbound)
+	// Phase 5: Resolve the edges of the files indexed by this run (from their
+	// already-extracted deps) and of every file marked for re-resolution.
+	resolved, err := idx.resolveDependencies(ctx, repoName, stored, symbolsByFile)
 	if err != nil {
 		return nil, fmt.Errorf("indexer: dependency resolution failed: %w", err)
 	}
@@ -255,13 +261,13 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 // filterChangedFiles compares discovered files against the DB to find which files
 // are new, changed, or deleted. Deleted files have their symbols removed (memories
 // become orphaned via ON DELETE SET NULL). Returns changed files, unchanged count,
-// deleted count, orphaned memory count, and the edges that pointed into the
-// deleted files (see store.DetachFileDependencies).
+// deleted count and orphaned memory count. Files that called into the deleted
+// files are marked for re-resolution (see store.DetachFileDependencies).
 func (idx *Indexer) filterChangedFiles(
 	ctx context.Context,
 	files []DiscoveredFile,
 	repoName string,
-) (changed []DiscoveredFile, unchanged int, deleted int, orphaned int, inbound []store.InboundDependency, err error) {
+) (changed []DiscoveredFile, unchanged int, deleted int, orphaned int, err error) {
 	// Build a set of discovered paths for O(1) lookup.
 	discovered := make(map[string]struct{}, len(files))
 	for _, f := range files {
@@ -271,7 +277,7 @@ func (idx *Indexer) filterChangedFiles(
 	// Batch-load all known file hashes (single query instead of N per-file lookups).
 	dbHashIndex, hashErr := store.GetFileHashIndex(ctx, idx.db, repoName)
 	if hashErr != nil {
-		return changed, unchanged, deleted, orphaned, inbound, fmt.Errorf("indexer: failed to load file hash index: %w", hashErr)
+		return changed, unchanged, deleted, orphaned, fmt.Errorf("indexer: failed to load file hash index: %w", hashErr)
 	}
 
 	for _, f := range files {
@@ -305,10 +311,16 @@ func (idx *Indexer) filterChangedFiles(
 		}
 		// File removed from disk — orphan its memories, then delete symbols + file record.
 		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, dbPath, "symbol_deleted")
-		if in, detachErr := store.DetachFileDependencies(ctx, idx.db, repoName, dbPath); detachErr != nil {
+		if markErr := store.MarkNameCallers(ctx, idx.db, repoName, map[string][]string{dbPath: nil}, nil); markErr != nil {
+			slog.Warn("indexer: failed to mark callers of removed file", "file", dbPath, "error", markErr)
+			continue // keep the file record so the next run retries
+		}
+		if detachErr := store.DetachFileDependencies(ctx, idx.db, repoName, dbPath); detachErr != nil {
 			slog.Warn("indexer: failed to detach dependencies for removed file", "file", dbPath, "error", detachErr)
-		} else {
-			inbound = append(inbound, in...)
+			continue // keep the file record so the next run retries
+		}
+		if delErr := store.DeleteCallSitesByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
+			slog.Warn("indexer: failed to delete call sites for removed file", "file", dbPath, "error", delErr)
 		}
 		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
 			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbPath, "error", delErr)
@@ -323,7 +335,7 @@ func (idx *Indexer) filterChangedFiles(
 		slog.Info("indexer: removed deleted file", "file", dbPath)
 	}
 
-	return changed, unchanged, deleted, orphaned, inbound, nil
+	return changed, unchanged, deleted, orphaned, nil
 }
 
 // snapshotMemoriesForFile snapshots and marks stale all non-stale memories for
@@ -413,91 +425,83 @@ func (idx *Indexer) storeFileResults(
 		Path:      file.RelPath,
 		SizeBytes: file.SizeBytes,
 	}
-	if err := store.ReplaceFileIndex(ctx, idx.db, &modelFile, symbols); err != nil {
+	if err := store.ReplaceFileIndex(ctx, idx.db, &modelFile, symbols, callSites(deps)); err != nil {
 		return fmt.Errorf("indexer: failed to store %s: %w", file.RelPath, err)
 	}
 	return nil
 }
 
-// resolveDependencies resolves raw call/extends/implements dependencies to
-// symbol IDs by matching names against the symbol registry in the database.
-// It uses the already-extracted deps from Phase 3 to avoid re-parsing files.
-// inbound holds edges from other files into the re-indexed or deleted files;
-// each is re-resolved by callee name if its caller still exists, so callers in
-// unchanged files point at the new symbol IDs (or lose the edge if the name is
-// gone).
-func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, results []fileResult, symbolsByFile map[string][]models.Symbol, inbound []store.InboundDependency) (int, error) {
-	// Build a name → ID lookup from all symbols in this repo.
-	symbolsByName, err := store.GetSymbolNameIndex(ctx, idx.db, repoName)
+// resolveDependencies resolves the call/extends/implements references of the
+// files stored by this run (from their already-extracted deps, no re-parse)
+// and of every file marked for re-resolution, by this run or an interrupted
+// earlier one (from their stored call sites). See resolver for the rules.
+// Each resolved file's outgoing edges are replaced and its mark cleared in a
+// single transaction.
+func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, stored []fileResult, symbolsByFile map[string][]models.Symbol) (int, error) {
+	pending, err := store.GetPendingResolution(ctx, idx.db, repoName)
 	if err != nil {
-		return 0, fmt.Errorf("indexer: failed to build symbol name index: %w", err)
+		return 0, fmt.Errorf("indexer: failed to load pending resolution: %w", err)
 	}
 
-	// Resolve deps using the already-extracted data from Phase 3.
+	sites := make(map[string][]store.CallSite, len(stored)+len(pending))
+	files := make([]string, 0, len(stored)+len(pending))
+	for _, r := range stored {
+		sites[r.file.RelPath] = callSites(r.deps)
+		files = append(files, r.file.RelPath)
+	}
+	var load []string
+	for _, p := range pending {
+		if _, ok := sites[p]; !ok {
+			load = append(load, p)
+		}
+	}
+	loaded, err := store.GetCallSitesByFiles(ctx, idx.db, repoName, load)
+	if err != nil {
+		return 0, fmt.Errorf("indexer: failed to load call sites: %w", err)
+	}
+	for _, p := range load {
+		sites[p] = loaded[p]
+		files = append(files, p)
+	}
+
+	res := newResolver(symbolsByFile)
 	var allDeps []models.Dependency
-
-	for _, r := range results {
-		if len(r.deps) == 0 {
-			continue
-		}
-
-		// Get caller symbols from pre-computed map (no DB query).
-		callerSymbols := symbolsByFile[r.file.RelPath]
-		if len(callerSymbols) == 0 {
-			continue
-		}
-
-		for _, d := range r.deps {
-			if d.Kind == "import" {
-				continue // imports don't map to symbol-to-symbol edges
-			}
-			calleeID, ok := symbolsByName[d.Symbol]
-			if !ok {
-				continue
-			}
-			caller, ok := enclosingSymbol(callerSymbols, d.Line)
-			if !ok {
-				continue // module-level statement: no calling symbol
-			}
-			allDeps = append(allDeps, models.Dependency{
-				CallerID: caller.ID,
-				CalleeID: calleeID,
-				Kind:     d.Kind,
-			})
-		}
+	for _, f := range files {
+		allDeps = append(allDeps, res.resolveFile(f, symbolsByFile[f], sites[f])...)
 	}
 
-	// Re-resolve inbound edges. Callers in files re-indexed this run have new
-	// IDs and their calls were resolved above, so only surviving callers count.
-	if len(inbound) > 0 {
-		existing := make(map[int64]struct{})
-		for _, syms := range symbolsByFile {
-			for _, s := range syms {
-				existing[s.ID] = struct{}{}
-			}
-		}
-		for _, in := range inbound {
-			if _, ok := existing[in.CallerID]; !ok {
-				continue
-			}
-			calleeID, ok := symbolsByName[in.CalleeName]
-			if !ok {
-				continue // callee removed: the call is unresolved
-			}
-			allDeps = append(allDeps, models.Dependency{
-				CallerID: in.CallerID,
-				CalleeID: calleeID,
-				Kind:     in.Kind,
-			})
-		}
+	if err := store.ReplaceResolvedDependencies(ctx, idx.db, repoName, files, allDeps, pending); err != nil {
+		return 0, fmt.Errorf("indexer: failed to store resolved dependencies: %w", err)
 	}
-
-	// Batch insert all resolved dependencies in a single transaction.
-	if err := store.BatchInsertDependencies(ctx, idx.db, allDeps); err != nil {
-		return 0, fmt.Errorf("indexer: failed to batch insert dependencies: %w", err)
-	}
-
 	return len(allDeps), nil
+}
+
+// callSites converts extracted deps to the call sites stored for a file.
+func callSites(deps []ExtractedDep) []store.CallSite {
+	out := make([]store.CallSite, 0, len(deps))
+	for _, d := range deps {
+		name := d.Symbol
+		if d.Kind == "import" {
+			name = d.Source
+		}
+		if name == "" {
+			continue
+		}
+		out = append(out, store.CallSite{Line: d.Line, Kind: d.Kind, Name: name, Qualifier: d.Qualifier})
+	}
+	return out
+}
+
+// symbolNames returns the names and qualified names the symbols define.
+func symbolNames(syms []models.Symbol) []string {
+	out := make([]string, 0, 2*len(syms))
+	for _, s := range syms {
+		out = append(out, s.Name)
+		if s.QualifiedName != s.Name {
+			out = append(out, s.QualifiedName)
+		}
+	}
+	return out
 }
 
 // enclosingSymbol returns the innermost symbol whose line range contains line:

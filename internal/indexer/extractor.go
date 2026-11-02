@@ -248,6 +248,13 @@ type ExtractedDep struct {
 	Symbol     string // called/extended/implemented symbol name
 	CallerFile string // file where the dependency originates
 	Line       int    // 1-based line of the capture, used to find the calling symbol
+	// Qualifier is, for a method or selector call, its receiver: a dotted
+	// name such as "s", "self.client" or "os.path", or "*" for any other
+	// expression; it is empty for a plain call. For an import it is the local
+	// name the import binds (Go package name or alias, the dotted path of a
+	// Python "import a.b", the name or alias of a Python from-import name,
+	// JS/TS default or namespace import), empty when it binds none.
+	Qualifier string
 }
 
 // ExtractDependencies runs the adapter's dependency query against the parsed
@@ -304,6 +311,17 @@ func (e *Extractor) processDependencyMatch(
 ) []ExtractedDep {
 	var deps []ExtractedDep
 
+	// The receiver of a selector call is captured in the same match as the
+	// method name; keep it as the call's qualifier.
+	receiver := ""
+	for _, capture := range match.Captures {
+		if query.CaptureNameForId(capture.Index) == "dependency.call_object" {
+			if content, ok := safeNodeContent(capture.Node, source); ok {
+				receiver = normalizeReceiver(content)
+			}
+		}
+	}
+
 	for _, capture := range match.Captures {
 		captureName := query.CaptureNameForId(capture.Index)
 		content, ok := safeNodeContent(capture.Node, source)
@@ -323,17 +341,48 @@ func (e *Extractor) processDependencyMatch(
 				Source:     importPath,
 				CallerFile: filePath,
 				Line:       line,
+				Qualifier:  importBinding(capture.Node, source, importPath),
 			})
+			// Python "from m import a, b as c": one more import per name,
+			// with the source m.a and the local name it binds.
+			if parent := capture.Node.Parent(); parent != nil && parent.Type() == "import_from_statement" {
+				for _, n := range pythonImportedNames(parent, source) {
+					sep := "."
+					if strings.HasSuffix(importPath, ".") {
+						sep = "" // from . import x → .x
+					}
+					deps = append(deps, ExtractedDep{
+						Kind:       "import",
+						Source:     importPath + sep + n.name,
+						CallerFile: filePath,
+						Line:       line,
+						Qualifier:  n.binding,
+					})
+				}
+			}
 
-		case "dependency.call", "dependency.call_method":
-			// call_method is the method/function name of a selector call
-			// (s.Load(), pkg.Func(), self.helper()); its call_object
-			// receiver is not a callee, so it is ignored.
+		case "dependency.call":
 			deps = append(deps, ExtractedDep{
 				Kind:       "call",
 				Symbol:     content,
 				CallerFile: filePath,
 				Line:       line,
+			})
+
+		case "dependency.call_method":
+			// The method/function name of a selector call (s.Load(),
+			// pkg.Func(), self.helper()); the receiver is not a callee but
+			// scopes the resolution.
+			q := receiver
+			if q == "" {
+				q = "*"
+			}
+			deps = append(deps, ExtractedDep{
+				Kind:       "call",
+				Symbol:     content,
+				CallerFile: filePath,
+				Line:       line,
+				Qualifier:  q,
 			})
 
 		case "dependency.extends":
@@ -376,4 +425,133 @@ func ResolveCallDependency(dep ExtractedDep, symbolsByName map[string]int64) *mo
 		CalleeID: calleeID,
 		Kind:     dep.Kind,
 	}
+}
+
+// normalizeReceiver returns a call receiver as written when it is a dotted
+// name (s, self.client, os.path), and "*" for any other expression.
+func normalizeReceiver(text string) string {
+	if text == "" {
+		return "*"
+	}
+	for _, part := range strings.Split(text, ".") {
+		if !isIdentifier(part) {
+			return "*"
+		}
+	}
+	return text
+}
+
+// isIdentifier reports whether s is a plain ASCII identifier ($ allowed for JS).
+func isIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_' || r == '$' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// pythonImportedName is one name of a Python from-import.
+type pythonImportedName struct {
+	name    string // the imported name
+	binding string // the local name: the alias, or the name itself
+}
+
+// pythonImportedNames returns the names a Python import_from_statement
+// imports ("from m import a, b as c"); none for "from m import *".
+func pythonImportedNames(stmt *sitter.Node, source []byte) []pythonImportedName {
+	var out []pythonImportedName
+	for i := 0; i < int(stmt.ChildCount()); i++ {
+		if stmt.FieldNameForChild(i) != "name" {
+			continue
+		}
+		child := stmt.Child(i)
+		nameNode, aliasNode := child, child
+		if child.Type() == "aliased_import" {
+			nameNode, aliasNode = child.ChildByFieldName("name"), child.ChildByFieldName("alias")
+		}
+		if nameNode == nil || aliasNode == nil {
+			continue
+		}
+		name, ok1 := safeNodeContent(nameNode, source)
+		binding, ok2 := safeNodeContent(aliasNode, source)
+		if ok1 && ok2 && name != "" && binding != "" {
+			out = append(out, pythonImportedName{name: name, binding: binding})
+		}
+	}
+	return out
+}
+
+// importBinding returns the local name an import binds, from the import
+// source node: a Go alias or the package name guessed from the path, the
+// dotted path of a Python "import a.b" (which makes a and a.b usable), or a
+// JS/TS default or namespace import. It returns "" for imports that bind no
+// single name (the module of a Python from-import, whose names get imports of
+// their own, JS named imports, Go blank and dot imports, other languages).
+func importBinding(node *sitter.Node, source []byte, importPath string) string {
+	parent := node.Parent()
+	if parent == nil {
+		return ""
+	}
+	switch parent.Type() {
+	case "import_spec": // Go
+		if alias := parent.ChildByFieldName("name"); alias != nil {
+			name, ok := safeNodeContent(alias, source)
+			if !ok || name == "_" || name == "." {
+				return ""
+			}
+			return name
+		}
+		return goPackageName(importPath)
+	case "import_statement":
+		if node.Type() == "dotted_name" { // Python: import a.b makes a, a.b usable
+			return importPath
+		}
+		// JS/TS: import x from '...' or import * as x from '...'.
+		for i := 0; i < int(parent.NamedChildCount()); i++ {
+			clause := parent.NamedChild(i)
+			if clause.Type() != "import_clause" {
+				continue
+			}
+			for j := 0; j < int(clause.NamedChildCount()); j++ {
+				c := clause.NamedChild(j)
+				switch c.Type() {
+				case "identifier":
+					name, _ := safeNodeContent(c, source)
+					return name
+				case "namespace_import":
+					for k := 0; k < int(c.NamedChildCount()); k++ {
+						if id := c.NamedChild(k); id.Type() == "identifier" {
+							name, _ := safeNodeContent(id, source)
+							return name
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// goPackageName guesses the package name of a Go import path without an
+// alias: the last element, skipping a major-version suffix (/v2), without a
+// "go-" prefix, a "-go" suffix or a ".vN" suffix (gopkg.in/yaml.v3).
+func goPackageName(importPath string) string {
+	parts := strings.Split(importPath, "/")
+	name := parts[len(parts)-1]
+	if len(parts) > 1 && len(name) > 1 && name[0] == 'v' && strings.Trim(name[1:], "0123456789") == "" {
+		name = parts[len(parts)-2]
+	}
+	name = strings.TrimPrefix(name, "go-")
+	name = strings.TrimSuffix(name, "-go")
+	if i := strings.IndexByte(name, '.'); i > 0 {
+		name = name[:i]
+	}
+	return name
 }

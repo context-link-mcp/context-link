@@ -31,9 +31,9 @@ func TestReplaceFileIndex(t *testing.T) {
 	db := setupTestDB(t)
 
 	a := &models.File{RepoName: "repo", Path: "a.py", ContentHash: "", SizeBytes: 10}
-	require.NoError(t, ReplaceFileIndex(ctx, db, a, []models.Symbol{fileSym("old", "a.py", 1)}))
+	require.NoError(t, ReplaceFileIndex(ctx, db, a, []models.Symbol{fileSym("old", "a.py", 1)}, nil))
 	require.NoError(t, ReplaceFileIndex(ctx, db, &models.File{RepoName: "repo", Path: "b.py", ContentHash: "hb"},
-		[]models.Symbol{fileSym("caller", "b.py", 1)}))
+		[]models.Symbol{fileSym("caller", "b.py", 1)}, nil))
 
 	old, err := GetSymbolByName(ctx, db, "repo", "old")
 	require.NoError(t, err)
@@ -46,7 +46,8 @@ func TestReplaceFileIndex(t *testing.T) {
 	require.NoError(t, BatchInsertFTSSymbols(ctx, db, []FTSSymbol{{SymbolID: old.ID, RepoName: "repo", Name: "old"}}))
 
 	a.ContentHash = "ha"
-	require.NoError(t, ReplaceFileIndex(ctx, db, a, []models.Symbol{fileSym("fresh", "a.py", 1)}))
+	sites := []CallSite{{Line: 1, Kind: "call", Name: "caller"}, {Line: 1, Kind: "import", Name: "b", Qualifier: "b"}}
+	require.NoError(t, ReplaceFileIndex(ctx, db, a, []models.Symbol{fileSym("fresh", "a.py", 1)}, sites))
 
 	_, err = GetSymbolByName(ctx, db, "repo", "old")
 	assert.ErrorIs(t, err, ErrSymbolNotFound)
@@ -54,6 +55,12 @@ func TestReplaceFileIndex(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Zero(t, countRows(t, db, `SELECT COUNT(*) FROM dependencies`), "edges of the old symbols are removed both ways")
 	assert.Zero(t, countRows(t, db, `SELECT COUNT(*) FROM fts_symbols`))
+	pending, err := GetPendingResolution(ctx, db, "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b.py"}, pending, "b.py's edge into a.py is to be resolved again")
+	got2, err := GetCallSitesByFiles(ctx, db, "repo", []string{"a.py", "b.py"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]CallSite{"a.py": sites}, got2)
 
 	got, err := GetFileByPath(ctx, db, "repo", "a.py")
 	require.NoError(t, err)
@@ -66,13 +73,13 @@ func TestReplaceFileIndex_RollsBackOnFailure(t *testing.T) {
 	db := setupTestDB(t)
 
 	f := &models.File{RepoName: "repo", Path: "a.py", ContentHash: "h1"}
-	require.NoError(t, ReplaceFileIndex(ctx, db, f, []models.Symbol{fileSym("keep", "a.py", 1)}))
+	require.NoError(t, ReplaceFileIndex(ctx, db, f, []models.Symbol{fileSym("keep", "a.py", 1)}, nil))
 	_, err := db.ExecContext(ctx, `CREATE TRIGGER fail_boom BEFORE INSERT ON symbols
 		WHEN NEW.name = 'boom' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
 	require.NoError(t, err)
 
 	f.ContentHash = "h2"
-	err = ReplaceFileIndex(ctx, db, f, []models.Symbol{fileSym("new", "a.py", 1), fileSym("boom", "a.py", 2)})
+	err = ReplaceFileIndex(ctx, db, f, []models.Symbol{fileSym("new", "a.py", 1), fileSym("boom", "a.py", 2)}, nil)
 	require.Error(t, err)
 
 	_, err = GetSymbolByName(ctx, db, "repo", "keep")

@@ -220,16 +220,41 @@ func TestDetachFileDependencies(t *testing.T) {
 	caller, callee, inner, out := id("repo", "caller"), id("repo", "Svc.callee"), id("repo", "inner"), id("repo", "out")
 	otherCallee := id("other", "callee")
 	require.NoError(t, BatchInsertDependencies(ctx, db, []models.Dependency{
-		{CallerID: caller, CalleeID: callee, Kind: "call"},           // inbound: returned by name
+		{CallerID: caller, CalleeID: callee, Kind: "call"},           // inbound: a.ts marked
 		{CallerID: inner, CalleeID: callee, Kind: "call"},            // same file: dropped
 		{CallerID: inner, CalleeID: out, Kind: "call"},               // outbound: dropped
 		{CallerID: caller, CalleeID: out, Kind: "call"},              // unrelated: kept
 		{CallerID: otherCallee, CalleeID: otherCallee, Kind: "call"}, // other repo, same path: kept
 	}))
+	// Call sites by name: d.ts calls "added" (gained by b.ts), e.ts calls
+	// "inner" (kept), f.ts imports "added" (not a call), k.ts calls "added"
+	// but is re-indexed anyway, h.ts calls "out" (c.ts's), and the other
+	// repo's g.ts calls "added".
+	for _, cs := range []struct{ repo, file, kind, name string }{
+		{"repo", "src/d.ts", "call", "added"},
+		{"repo", "src/e.ts", "call", "inner"},
+		{"repo", "src/f.ts", "import", "added"},
+		{"repo", "src/k.ts", "call", "added"},
+		{"repo", "src/h.ts", "call", "out"},
+		{"other", "src/g.ts", "call", "added"},
+	} {
+		_, err := db.ExecContext(ctx, `INSERT INTO call_sites (repo_name, file_path, line, kind, name) VALUES (?, ?, 1, ?, ?)`,
+			cs.repo, cs.file, cs.kind, cs.name)
+		require.NoError(t, err)
+	}
 
-	inbound, err := DetachFileDependencies(ctx, db, "repo", "src/b.ts")
+	// b.ts keeps inner and Svc.callee, loses nothing, gains "added".
+	require.NoError(t, MarkNameCallers(ctx, db, "repo",
+		map[string][]string{"src/b.ts": {"inner", "callee", "Svc.callee", "added"}},
+		map[string]bool{"src/k.ts": true}))
+	require.NoError(t, DetachFileDependencies(ctx, db, "repo", "src/b.ts"))
+
+	pending, err := GetPendingResolution(ctx, db, "repo")
 	require.NoError(t, err)
-	assert.Equal(t, []InboundDependency{{CallerID: caller, CalleeName: "callee", Kind: "call"}}, inbound)
+	assert.Equal(t, []string{"src/a.ts", "src/d.ts"}, pending)
+	otherPending, err := GetPendingResolution(ctx, db, "other")
+	require.NoError(t, err)
+	assert.Empty(t, otherPending, "other repos are never marked")
 
 	var remaining int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dependencies`).Scan(&remaining))
@@ -238,4 +263,22 @@ func TestDetachFileDependencies(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
 	assert.Equal(t, out, deps[0].CalleeID)
+
+	// A deleted file (no new names) marks callers of every name it had.
+	require.NoError(t, MarkNameCallers(ctx, db, "repo", map[string][]string{"src/c.ts": nil}, nil))
+	require.NoError(t, DetachFileDependencies(ctx, db, "repo", "src/c.ts"))
+	pending, err = GetPendingResolution(ctx, db, "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"src/a.ts", "src/d.ts", "src/h.ts"}, pending)
+
+	// Writing the resolved edges clears exactly the given marks, atomically.
+	require.NoError(t, ReplaceResolvedDependencies(ctx, db, "repo", []string{"src/a.ts"},
+		[]models.Dependency{{CallerID: caller, CalleeID: inner, Kind: "call"}}, []string{"src/a.ts", "src/c.ts"}))
+	pending, err = GetPendingResolution(ctx, db, "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"src/d.ts", "src/h.ts"}, pending)
+	deps, err = GetDependenciesByCaller(ctx, db, caller)
+	require.NoError(t, err)
+	require.Len(t, deps, 1, "a.ts's old edges are replaced")
+	assert.Equal(t, inner, deps[0].CalleeID)
 }
