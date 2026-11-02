@@ -30,11 +30,13 @@ func RegisterModifiedSymbolsTool(
 				"Use base_ref=main for branch diff, or a commit SHA for specific comparison.",
 		),
 		mcp.WithString("base_ref",
-			mcp.Description("Git ref to diff against (default: HEAD for uncommitted changes)"),
+			mcp.Description("Git ref to diff against (default: HEAD for uncommitted changes). "+
+				"Must name a commit; values starting with '-' are rejected."),
 			mcp.DefaultString("HEAD"),
 		),
 		mcp.WithBoolean("include_staged",
-			mcp.Description("Include staged (git add) changes in addition to unstaged (default: true)"),
+			mcp.Description("Include staged (git add) changes in addition to unstaged (default: true). "+
+				"Only applies when base_ref is HEAD; other refs always include both."),
 			mcp.DefaultBool(true),
 		),
 	)
@@ -54,6 +56,9 @@ func modifiedSymbolsHandler(
 		// Parse parameters.
 		baseRef := req.GetString("base_ref", "HEAD")
 		includeStaged := req.GetBool("include_staged", true)
+		if err := ValidateGitRef(baseRef); err != nil {
+			return mcp.NewToolResultError("get_modified_symbols: invalid base_ref: " + err.Error()), nil
+		}
 
 		// Extract git diff hunks.
 		gitDiff, err := ExtractGitDiff(ctx, projectRoot, baseRef, includeStaged)

@@ -94,7 +94,7 @@ func TestModifiedSymbols_NoChanges(t *testing.T) {
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		ModifiedSymbols []any `json:"modified_symbols"`
+		ModifiedSymbols []any `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -129,7 +129,7 @@ func TestModifiedSymbols_ModifiedFiles(t *testing.T) {
 		ModifiedSymbols []struct {
 			Name       string `json:"name"`
 			ChangeType string `json:"change_type"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -168,7 +168,7 @@ func TestModifiedSymbols_AddedFiles(t *testing.T) {
 		ModifiedSymbols []struct {
 			Name       string `json:"name"`
 			ChangeType string `json:"change_type"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -204,7 +204,7 @@ func TestModifiedSymbols_DeletedFiles(t *testing.T) {
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		ModifiedSymbols []any `json:"modified_symbols"`
+		ModifiedSymbols []any `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -240,7 +240,7 @@ func TestModifiedSymbols_IncludeStaged(t *testing.T) {
 	var resp struct {
 		ModifiedSymbols []struct {
 			Name string `json:"name"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -276,7 +276,7 @@ func TestModifiedSymbols_ExcludeStaged(t *testing.T) {
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		ModifiedSymbols []any `json:"modified_symbols"`
+		ModifiedSymbols []any `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -312,7 +312,7 @@ func TestModifiedSymbols_CustomBaseRef(t *testing.T) {
 	var resp struct {
 		ModifiedSymbols []struct {
 			Name string `json:"name"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -384,7 +384,7 @@ func func3() {
 	var resp struct {
 		ModifiedSymbols []struct {
 			Name string `json:"name"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -418,7 +418,7 @@ func TestModifiedSymbols_SymbolNotIndexed(t *testing.T) {
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		ModifiedSymbols []any `json:"modified_symbols"`
+		ModifiedSymbols []any `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -455,7 +455,7 @@ func TestModifiedSymbols_ChangedLines(t *testing.T) {
 		ModifiedSymbols []struct {
 			Name       string `json:"name"`
 			ChangeType string `json:"change_type"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -494,7 +494,7 @@ func TestModifiedSymbols_ChangeType(t *testing.T) {
 	var resp struct {
 		ModifiedSymbols []struct {
 			ChangeType string `json:"change_type"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -559,7 +559,7 @@ func func4() {}
 	var resp struct {
 		ModifiedSymbols []struct {
 			Name string `json:"name"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -595,7 +595,7 @@ func TestModifiedSymbols_UntrackedFiles(t *testing.T) {
 		ModifiedSymbols []struct {
 			Name       string `json:"name"`
 			ChangeType string `json:"change_type"`
-		} `json:"modified_symbols"`
+		} `json:"symbols"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
