@@ -467,8 +467,11 @@ type DeadCodeOptions struct {
 	Limit           int    // max results (default 50)
 }
 
-// FindDeadSymbols returns symbols with zero inbound dependency edges,
-// excluding common entry points (main, init, Init, Main).
+// FindDeadSymbols returns symbols with zero inbound dependency edges and no
+// call site anywhere in the repo naming them (outside their own body),
+// excluding common entry points (main, init, Init, Main). The call-site check
+// keeps symbols alive whose callers the resolver left unlinked on purpose,
+// such as methods called on a receiver of unknown type from another module.
 func FindDeadSymbols(ctx context.Context, db *DB, repoName string, opts DeadCodeOptions) ([]models.Symbol, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
@@ -484,6 +487,10 @@ func FindDeadSymbols(ctx context.Context, db *DB, repoName string, opts DeadCode
 	args = append(args, repoName)
 
 	conditions = append(conditions, "d.id IS NULL")
+	conditions = append(conditions, `NOT EXISTS (
+		SELECT 1 FROM call_sites cs
+		WHERE cs.repo_name = s.repo_name AND cs.name = s.name AND cs.kind != 'import'
+		  AND NOT (cs.file_path = s.file_path AND cs.line BETWEEN s.start_line AND s.end_line))`)
 	conditions = append(conditions, "s.name NOT IN ('main', 'init', 'Init', 'Main')")
 	conditions = append(conditions, "s.kind NOT IN ('variable', 'import')")
 

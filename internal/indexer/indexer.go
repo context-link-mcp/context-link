@@ -195,10 +195,13 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	}
 
 	// Pre-compute symbol map for phases 5-7 (single query instead of 3×N per-file lookups).
+	// Phase 5 resolves against every symbol of the repo and replaces the edges
+	// of the files it resolves, so an incomplete map would delete edges for
+	// good. Fail the run instead: the hashes are not committed and the pending
+	// marks stay, so the next run retries.
 	symbolsByFile, err := store.GetSymbolsByRepo(ctx, idx.db, repoName)
 	if err != nil {
-		slog.Warn("indexer: failed to build symbol map, falling back to per-file lookups", "error", err)
-		symbolsByFile = make(map[string][]models.Symbol)
+		return nil, fmt.Errorf("indexer: failed to load symbols for resolution: %w", err)
 	}
 
 	// Store HTTP routes, resolving handler names to the symbol IDs just inserted.
@@ -465,6 +468,7 @@ func (idx *Indexer) resolveDependencies(ctx context.Context, repoName string, st
 	}
 
 	res := newResolver(symbolsByFile)
+	res.goModule = goModulePath(idx.repoRoot)
 	var allDeps []models.Dependency
 	for _, f := range files {
 		allDeps = append(allDeps, res.resolveFile(f, symbolsByFile[f], sites[f])...)
