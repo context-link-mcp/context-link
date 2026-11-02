@@ -695,6 +695,47 @@ func TestFindDeadSymbols_Complex(t *testing.T) {
 	assert.Equal(t, "orphan", deadSymbols[0].Name)
 }
 
+// TestFindDeadSymbols_CallSitesKeepSymbolsAlive guards against symbols being
+// reported dead only because the resolver left their callers unlinked (a
+// method called on a receiver of unknown type from another module).
+func TestFindDeadSymbols_CallSitesKeepSymbolsAlive(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	symbols := []models.Symbol{
+		{RepoName: "repo", Name: "save", QualifiedName: "Repo.save", Kind: "method", FilePath: "app/repo.py", ContentHash: "h1", CodeBlock: "def save(self): ...", StartLine: 2, EndLine: 3, Language: "python"},
+		{RepoName: "repo", Name: "recurse", QualifiedName: "recurse", Kind: "function", FilePath: "app/repo.py", ContentHash: "h2", CodeBlock: "def recurse(): ...", StartLine: 5, EndLine: 7, Language: "python"},
+		{RepoName: "repo", Name: "orphan", QualifiedName: "orphan", Kind: "function", FilePath: "app/repo.py", ContentHash: "h3", CodeBlock: "def orphan(): ...", StartLine: 9, EndLine: 10, Language: "python"},
+	}
+	require.NoError(t, BatchInsertSymbols(ctx, db, symbols))
+
+	sites := []struct {
+		repo, file string
+		line       int
+		kind, name string
+	}{
+		{"repo", "app/service.py", 4, "call", "save"},     // unlinked obj.save() elsewhere: alive
+		{"repo", "app/repo.py", 6, "call", "recurse"},     // only calls itself: still dead
+		{"other", "app/service.py", 4, "call", "orphan"},  // another repo: doesn't count
+		{"repo", "app/service.py", 1, "import", "orphan"}, // an import is not a call
+	}
+	for _, s := range sites {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO call_sites (repo_name, file_path, line, kind, name, qualifier) VALUES (?, ?, ?, ?, ?, '')`,
+			s.repo, s.file, s.line, s.kind, s.name)
+		require.NoError(t, err)
+	}
+
+	dead, err := FindDeadSymbols(ctx, db, "repo", DeadCodeOptions{Limit: 50})
+	require.NoError(t, err)
+	var names []string
+	for _, s := range dead {
+		names = append(names, s.Name)
+	}
+	assert.Equal(t, []string{"recurse", "orphan"}, names)
+}
+
 func TestGetCallTree_EdgeCap(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

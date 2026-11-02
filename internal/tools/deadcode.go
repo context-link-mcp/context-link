@@ -18,7 +18,7 @@ import (
 func RegisterDeadCodeTool(s *server.MCPServer, db *store.DB, repoName, projectRoot string, timeout time.Duration, tracker *SessionTokenTracker) {
 	tool := mcp.NewTool("find_dead_code",
 		mcp.WithDescription(
-			"Finds symbols with zero inbound dependency edges (no callers). "+
+			"Finds symbols with zero inbound dependency edges and no call site naming them (no callers). "+
 				"These are potential dead code candidates. Entry points (main, init) are excluded. "+
 				"Example: find_dead_code(exclude_exported=true) returns unexported functions nobody calls.",
 		),

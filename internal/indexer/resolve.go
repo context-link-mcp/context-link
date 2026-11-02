@@ -1,7 +1,9 @@
 package indexer
 
 import (
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -56,6 +58,10 @@ type resolver struct {
 	files   map[string]string            // file path → language family, for files with symbols
 	dirs    map[string][]string          // directory → files with symbols, sorted
 	ordered []string                     // every file with symbols, sorted
+
+	// goModule is the module path in the repo root's go.mod, or "" when there
+	// is none. Imports under it map to repo directories exactly.
+	goModule string
 
 	importCache map[string][]string // see importedFiles
 }
@@ -457,9 +463,30 @@ func (r *resolver) familyFiles(family string, files []string) []string {
 	return out
 }
 
-// goPackageDir returns the repo directory a Go import path refers to: the
-// longest directory with Go files that the import path ends with, or "".
+// goPackageDir returns the repo directory a Go import path refers to, or ""
+// for an external package:
+//
+//   - under the root go.mod's module path, the directory it names;
+//   - a path whose first element has no dot is the standard library (Go
+//     reserves those), even if a repo directory has the same name (log, http);
+//   - otherwise (no root go.mod, or another module in the repo), the longest
+//     directory with Go files that the import path ends with.
 func (r *resolver) goPackageDir(importPath string) string {
+	if m := r.goModule; m != "" {
+		if importPath == m || strings.HasPrefix(importPath, m+"/") {
+			dir := strings.TrimPrefix(strings.TrimPrefix(importPath, m), "/")
+			if dir == "" {
+				dir = "."
+			}
+			if len(r.familyFiles("go", r.dirs[dir])) == 0 {
+				return ""
+			}
+			return dir
+		}
+	}
+	if first, _, _ := strings.Cut(importPath, "/"); !strings.Contains(first, ".") {
+		return ""
+	}
 	best := ""
 	for dir, files := range r.dirs {
 		if dir == "." || len(dir) <= len(best) || len(r.familyFiles("go", files)) == 0 {
@@ -470,6 +497,23 @@ func (r *resolver) goPackageDir(importPath string) string {
 		}
 	}
 	return best
+}
+
+// goModulePath returns the module path declared in repoRoot/go.mod, or "" if
+// there is no readable go.mod or it declares none.
+func goModulePath(repoRoot string) string {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line, _, _ = strings.Cut(line, "//")
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], "\"`")
+		}
+	}
+	return ""
 }
 
 // pathHasSuffix reports whether p equals suffix or ends with "/"+suffix.

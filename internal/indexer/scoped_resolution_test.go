@@ -133,6 +133,68 @@ func run() {
 			want: []string{"internal/store/db.go:Open"},
 		},
 		{
+			name: "go standard library import does not map to a repo directory of the same name",
+			files: map[string]string{
+				"go.mod":      "module example.com/app // the app\n",
+				"log/log.go":  "package log\n\nfunc Printf(format string) {}\n",
+				"http/srv.go": "package http\n\nfunc ListenAndServe(addr string) error { return nil }\n",
+				"cmd/app/main.go": `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+func run() {
+	log.Printf("x")
+	http.ListenAndServe(":80")
+}
+`,
+			},
+			file: "cmd/app/main.go", caller: "run",
+			want: []string{},
+		},
+		{
+			name: "go standard library import is external without a go.mod too",
+			files: map[string]string{
+				"log/log.go": "package log\n\nfunc Printf(format string) {}\n",
+				"cmd/app/main.go": `package main
+
+import "log"
+
+func run() {
+	log.Printf("x")
+}
+`,
+			},
+			file: "cmd/app/main.go", caller: "run",
+			want: []string{},
+		},
+		{
+			name: "go import under the module path maps to that exact directory",
+			files: map[string]string{
+				"go.mod":                "module example.com/app\n",
+				"store/db.go":           "package store\n\nfunc Open(path string) error { return nil }\n",
+				"internal/store/db.go":  "package store\n\nfunc Open(path string) error { return nil }\n",
+				"vendorish/store/db.go": "package store\n\nfunc Open(path string) error { return nil }\n",
+				"root.go":               "package app\n\nfunc Version() string { return \"1\" }\n",
+				"cmd/app/main.go": `package main
+
+import (
+	"example.com/app"
+	"example.com/app/store"
+)
+
+func run() {
+	store.Open("x")
+	app.Version()
+}
+`,
+			},
+			file: "cmd/app/main.go", caller: "run",
+			want: []string{"root.go:Version", "store/db.go:Open"},
+		},
+		{
 			name: "go method call on an unknown receiver stays in its package",
 			files: map[string]string{
 				"internal/vec/heap.go": "package vec\n\ntype candidateHeap []int\n\nfunc (h candidateHeap) Len() int { return len(h) }\n",
@@ -382,6 +444,40 @@ func TestInterruptedRunRestoresInboundEdges(t *testing.T) {
 	var pending int
 	require.NoError(t, r.db.QueryRowContext(r.ctx, `SELECT COUNT(*) FROM pending_resolution`).Scan(&pending))
 	assert.Zero(t, pending, "nothing is left pending after a complete run")
+}
+
+// TestSymbolMapFailureKeepsEdges guards against Phase 5 resolving against an
+// empty symbol map when it can't be loaded: that replaced the pending files'
+// edges with nothing and cleared their marks, losing the edges for good.
+func TestSymbolMapFailureKeepsEdges(t *testing.T) {
+	t.Parallel()
+	r := newResolutionRepo(t, map[string]string{
+		"cache.go": incrementalCacheSource,
+		"main.go":  incrementalMainSource,
+	})
+	r.index()
+	want := []string{"cache.go:Cache.Load", "cache.go:Helper"}
+	require.Equal(t, want, r.callees("main.go", "run"))
+
+	// A row that can't be scanned makes store.GetSymbolsByRepo fail.
+	_, err := r.db.ExecContext(r.ctx, `INSERT INTO symbols
+		(repo_name, name, qualified_name, kind, file_path, content_hash, code_block,
+		 start_line, end_line, language, indexed_at)
+		VALUES ('repo', 'bad', 'bad', 'function', 'zz_bad.go', 'h', '', 1, 1, 'go', 'not a time')`)
+	require.NoError(t, err)
+	r.write("cache.go", "// edited\n"+incrementalCacheSource)
+	_, err = r.idx.IndexRepo(r.ctx, "repo", r.root)
+	require.Error(t, err, "the run must fail rather than resolve against no symbols")
+
+	var pending int
+	require.NoError(t, r.db.QueryRowContext(r.ctx,
+		`SELECT COUNT(*) FROM pending_resolution WHERE file_path = 'main.go'`).Scan(&pending))
+	assert.Equal(t, 1, pending, "main.go stays marked for the next run")
+
+	_, err = r.db.ExecContext(r.ctx, `DELETE FROM symbols WHERE file_path = 'zz_bad.go'`)
+	require.NoError(t, err)
+	r.index()
+	assert.Equal(t, want, r.callees("main.go", "run"), "main.go's edges into cache.go are restored")
 }
 
 // TestAddedCalleeLinksUnchangedCaller guards against a call that was
