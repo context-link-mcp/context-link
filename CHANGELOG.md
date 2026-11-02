@@ -8,12 +8,24 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 - **Breaking:** `extract` output is now `schema_version: 2`. `files[].symbols` is a list of objects instead of names: `name`, `qualified_name`, `kind`, `start_line`, `end_line`, `offset` (byte offset in `content`), `role` (`match`, `dependency` or `outline`) and `dependencies` (resolved direct callees with file and lines).
 
 ### Added
+- `serve --repo-name`, with the same meaning as on `index`.
+- `.gitignore` support for `!` negation (last match wins), anchored `/pattern` and `**`.
+- Migration `008_memories_repo_name.sql`: memories record their repo.
 - `extract` packs the code of each match's direct dependencies after the matches and before skeletons, within the budget; dependencies that did not fit stay listed as references and are counted in a warning. `--dependency-depth 0` lists dependencies without packing their code.
 - `store.GetDirectDependencies`: batch caller → direct callees lookup scoped by `repo_name`.
 
 ### Fixed
 - `testdata/extract` fixtures are checked out with LF line endings (`.gitattributes`), so `budget.used_bytes` in the golden files no longer depends on `core.autocrlf`.
 - Dependency edges were all attributed to the first symbol in the caller's file (often a module-level variable such as `logger` or `router`). Each call now belongs to the innermost symbol whose lines contain it, and calls in module-level statements produce no edge. On paranoid: 2,098 → 5,896 edges, 271 → 2,695 distinct callers. Affects `get_code_by_symbol`, `get_call_tree`, `get_symbol_usages`, `get_blast_radius`, `find_dead_code` and search enrichment. Migration `007_reresolve_dependencies.sql` drops the old edges, so the first index after upgrading is a full re-index; memories are relinked to their symbols.
+- **Security:** `get_modified_symbols` passed `base_ref` straight to `git diff`, so a value such as `--output=<path>` could write any file. Refs starting with `-` are now rejected, and refs are resolved with `git rev-parse --verify --end-of-options` before use.
+- `get_modified_symbols` returned nothing when the project root was a subfolder of the git repo and ran no diff for `include_staged=false` with `HEAD`. It now reports untracked files as added, and renamed and non-ASCII paths by their new path.
+- Method and selector calls (`s.Load()`, `pkg.Func()`, `self.helper()`, `this.helper()`) now produce call edges in Go, Python, JavaScript and TypeScript; before, every cross-package Go call was missing. On context-link: 1,331 → 2,116 edges; on paranoid: 5,896 → 8,241. Callees are still matched by bare name, so common method names (`get`, `Len`, `Open`) can link to the wrong symbol.
+- Editing or deleting a file left edges from unchanged callers pointing at deleted symbols. They are now linked again by name after an incremental index, or left unresolved if the callee is gone. Migration `009_reresolve_method_call_edges.sql` makes the first index after upgrading a full re-index.
+- Indexing found 0 files when the project folder was named `vendor`, `build` or `dist`, or when `.gitignore` contained `.*` or `*`. Ignore rules no longer apply to the root.
+- An interrupted or failed index run could leave files with a current hash but no symbols, so later runs skipped them. Each file is now replaced in one transaction and hashes are committed only after the run finishes; an interrupted run returns an error and is retried next time.
+- `serve --project-root .` queried repo `"."` and every tool returned nothing. `index`, `serve` and `extract` now resolve the project root and repo name the same way.
+- Semantic search kept a stale vector cache after `reindex_project` or a `--watch` re-index, so new and changed code was missing from vector results. The cache is now refreshed after every re-index.
+- `purge_stale_memories` deleted stale memories from every repo in a shared database, and orphaned memories could relink to another repo's symbol at the same path. Both are now scoped by repo. In a shared database, legacy orphaned memories whose repo can't be determined are kept but left out of purges, relinks and reads. `get_symbol_memories` now also returns the current repo's orphaned memories.
 
 ## [1.2.0] - 2026-10-17
 
