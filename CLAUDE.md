@@ -68,6 +68,10 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 - Transactions for multi-statement writes
 - `ON DELETE SET NULL` for memories (not CASCADE)
 
+### Dependency Graph
+- Edges are resolved only through `internal/indexer/resolve.go`: same language family, widening scope (file → dir → imports → repo-unique), no edge when ambiguous; never by bare name across the repo
+- Anything that drops edges into a file must mark the callers in `pending_resolution` in the same transaction (see `store.ReplaceFileIndex`, `store.DetachFileDependencies`, `store.MarkNameCallers`)
+
 ### MCP Tools
 - Structured JSON responses, never plain text
 - Input validation before processing
@@ -104,7 +108,9 @@ internal/indexer/language.go       LanguageAdapter interface + registry
 internal/indexer/extractor.go      Tree-sitter query-based symbol/dep extraction
 internal/indexer/adapters/         12 language adapters (TS, TSX, Go, Python, JS, Rust, Java, C, C++, C#, Kotlin, Swift) + .scm query files
 internal/store/symbols.go          Symbol CRUD + BFS transitive dependency resolution
+internal/indexer/resolve.go        Scoped call resolution: same language, file → dir → imports → repo (unique names only); import-bound receivers
 internal/store/dependencies.go     Dependency edge CRUD
+internal/store/callsites.go        Raw call sites per file + pending_resolution marks (crash-safe re-resolution of unchanged callers)
 internal/vectorstore/model2vec.go  Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config)
 internal/vectorstore/onnx.go       Optional ONNX embedder (all-MiniLM-L6-v2, 384-dim)
 internal/vectorstore/vecstore.go   Embedding CRUD, KNN search, dimension validation
@@ -146,5 +152,5 @@ internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, increm
 - **Phase 5 (Polish):** Complete — performance optimizations (150x search speedup), 3 new context tools (skeleton, usages, call tree), config-driven tool registry, version injection via ldflags, GoReleaser + CI/CD, Apache-2.0 license
 - **v0.3.0:** Complete — token savings tracking (all tool responses), 7 new language adapters (Python, JS, Rust, Java, C, C++, C#), find_dead_code tool, get_blast_radius tool, file watcher (`--watch` on serve), HTTP route detection (find_http_routes; indexer extracts FastAPI/Flask/Express definitions only — Gin, Django, Spring and client call sites are not extracted yet)
 - **v1.2.0:** Tagged — fresh Tree-sitter parser per parse (fixes silently dropped files, PR #3), HTTP route extraction for FastAPI/Flask/Express (PR #4), `extract` subcommand with JSON contract `schema_version: 1` (PR #5)
-- **Unreleased (v1.3.0 planned):** `extract` schema_version 2 (CL-5) — `files[].symbols[]` objects with `start_line`/`end_line`/`offset`/`role`/`dependencies`, direct dependency code packed within the budget, `--dependency-depth 0|1`. Dependency edges attributed to the innermost enclosing symbol by call-site line (was: first symbol in the file). High-severity fixes from the 2026-10-31 code review (H1–H10, PRs #12–#16): git ref injection, memories scoped by `repo_name` (migration 008), method-call edges + inbound edge re-resolution (migration 009), transactional per-file index with hashes committed at run end, root never ignored by the walker, `serve` root/repo-name resolution, vector cache invalidated after re-index. Remaining: Gin/Django/Spring routes, paranoid migration to `extract`
+- **Unreleased (v1.3.0 planned):** `extract` schema_version 2 (CL-5) — `files[].symbols[]` objects with `start_line`/`end_line`/`offset`/`role`/`dependencies`, direct dependency code packed within the budget, `--dependency-depth 0|1`. Dependency edges attributed to the innermost enclosing symbol by call-site line (was: first symbol in the file). High-severity fixes from the 2026-10-31 code review (H1–H10, PRs #12–#16): git ref injection, memories scoped by `repo_name` (migration 008), method-call edges + inbound edge re-resolution (migration 009), transactional per-file index with hashes committed at run end, root never ignored by the walker, `serve` root/repo-name resolution, vector cache invalidated after re-index. M3: scoped, same-language call resolution with import-bound receivers; raw call sites stored per file and files to re-resolve recorded in `pending_resolution`, so interrupted runs and newly added callees re-link unchanged callers (migration 010). Remaining: Gin/Django/Spring routes, paranoid migration to `extract`
 - **v1.1.0:** Complete — Kotlin adapter (`.kt`, `.kts`; class/data class/enum/object/fun/property/delegation), Swift adapter (`.swift`; class/struct/actor/enum/protocol/func/property/typealias/inheritance), snapshot tests + golden fixtures for both

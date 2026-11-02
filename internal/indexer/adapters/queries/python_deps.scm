@@ -13,6 +13,11 @@
   module_name: (dotted_name) @dependency.source
 ) @dependency.import
 
+; from . import x / from ..pkg.mod import x
+(import_from_statement
+  module_name: (relative_import) @dependency.source
+) @dependency.import
+
 ; === Function calls (unqualified) ===
 ; foo()
 (call

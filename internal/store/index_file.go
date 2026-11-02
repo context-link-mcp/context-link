@@ -12,21 +12,28 @@ import (
 const fileSymbolIDs = `SELECT id FROM symbols WHERE repo_name = ? AND file_path = ?`
 
 // ReplaceFileIndex atomically replaces everything indexed for one file: it
-// deletes the file's FTS rows, embeddings, dependency edges (both directions,
-// as the schema's ON DELETE CASCADE would), route definitions and symbols,
-// inserts the new symbols, and upserts the file record with f.ContentHash
-// last. Either all of it is committed or none of it is.
+// marks the other files with edges into it for re-resolution, deletes the
+// file's FTS rows, embeddings, dependency edges (both directions, as the
+// schema's ON DELETE CASCADE would), route definitions, call sites and
+// symbols, inserts the new symbols and call sites, and upserts the file record
+// with f.ContentHash last. Either all of it is committed or none of it is.
 //
 // Callers that still have work to do for the file after this call (dependency
 // resolution, FTS, embeddings) pass an empty ContentHash, which incremental
 // runs treat as changed, and commit the real hash with SetFileHashes once the
 // file is fully indexed.
-func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []models.Symbol) error {
+func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []models.Symbol, sites []CallSite) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: failed to begin file replace for %s: %w", f.Path, err)
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	// Callers in other files lose their edges into this file below; mark them
+	// for re-resolution in the same transaction (see markEdgeCallers).
+	if err := markEdgeCallers(ctx, tx, f.RepoName, f.Path); err != nil {
+		return err
+	}
 
 	deletes := []struct {
 		what  string
@@ -41,6 +48,8 @@ func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []mod
 			OR callee_id IN (` + fileSymbolIDs + `)`,
 			[]any{f.RepoName, f.Path, f.RepoName, f.Path}},
 		{"routes", `DELETE FROM routes WHERE repo_name = ? AND file_path = ? AND kind = 'definition'`,
+			[]any{f.RepoName, f.Path}},
+		{"call sites", `DELETE FROM call_sites WHERE repo_name = ? AND file_path = ?`,
 			[]any{f.RepoName, f.Path}},
 		{"symbols", `DELETE FROM symbols WHERE repo_name = ? AND file_path = ?`,
 			[]any{f.RepoName, f.Path}},
@@ -69,6 +78,10 @@ func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []mod
 				return fmt.Errorf("store: failed to insert symbol %s: %w", s.QualifiedName, err)
 			}
 		}
+	}
+
+	if err := insertCallSites(ctx, tx, f.RepoName, f.Path, sites); err != nil {
+		return err
 	}
 
 	// The file record goes last, so its hash is never newer than its symbols.
