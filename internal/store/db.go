@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 )
@@ -20,8 +21,17 @@ type DB struct {
 // Open opens (or creates) the SQLite database at the given path and applies
 // the required PRAGMA settings for safe concurrent access.
 func Open(path string) (*DB, error) {
-	// modernc/sqlite DSN supports query parameters for pragmas.
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=-8000&_temp_store=memory", path)
+	// modernc.org/sqlite runs each _pragma parameter on every new connection.
+	// It ignores mattn-style names such as _foreign_keys, so every setting must
+	// use this form. busy_timeout goes first so the others wait on a lock.
+	dsn := path + "?" + strings.Join([]string{
+		"_pragma=busy_timeout(5000)",
+		"_pragma=foreign_keys(1)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=cache_size(-8000)",
+		"_pragma=temp_store(MEMORY)",
+	}, "&")
 
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {

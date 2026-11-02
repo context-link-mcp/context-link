@@ -74,3 +74,29 @@ func TestMigrate_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, total, distinct, "each migration file should be recorded exactly once (no duplicates)")
 }
+
+func TestOpen_AppliesPragmas(t *testing.T) {
+	t.Parallel()
+
+	// A file DB: in-memory databases report journal_mode "memory".
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	pragmas := []struct {
+		name string
+		want string
+	}{
+		{"foreign_keys", "1"},
+		{"journal_mode", "wal"},
+		{"busy_timeout", "5000"},
+		{"synchronous", "1"}, // NORMAL
+		{"cache_size", "-8000"},
+		{"temp_store", "2"}, // MEMORY
+	}
+	for _, p := range pragmas {
+		var got string
+		require.NoError(t, db.QueryRow("PRAGMA "+p.name).Scan(&got), p.name)
+		assert.Equal(t, p.want, got, "PRAGMA %s", p.name)
+	}
+}

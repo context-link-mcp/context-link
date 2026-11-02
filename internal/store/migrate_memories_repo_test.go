@@ -93,10 +93,9 @@ func TestMigration008_MemoriesRepoName(t *testing.T) {
 					VALUES (NULL, ?, 1, 'symbol_deleted', 'Logout', 'auth.go')`, repo+" orphan")
 				require.NoError(t, err)
 				// Linked to a symbol id that no longer exists (FKs were never enforced).
-				_, err = db.ExecContext(ctx, `
+				execWithoutForeignKeys(t, db, `
 					INSERT INTO memories (symbol_id, note, is_stale, last_known_symbol, last_known_file)
 					VALUES (999999, ?, 1, 'Gone', 'auth.go')`, repo+" dangling")
-				require.NoError(t, err)
 			}
 
 			require.NoError(t, Migrate(db))

@@ -171,3 +171,58 @@ func Handler() {}
 	assert.Equal(t, "handler.go", orphans[0].LastKnownFile)
 	assert.Equal(t, "Handler is the HTTP entry point.", orphans[0].Note, "note content must survive")
 }
+
+// TestMemorySurvivesForceReindex verifies that a forced re-index of an
+// unchanged file detaches a symbol's memories before replacing the symbol and
+// relinks them to the new one: found by name, under the new ID, not stale.
+func TestMemorySurvivesForceReindex(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupTestDB(t)
+	idx := buildTestIndexer(t, db)
+
+	projectRoot := t.TempDir()
+	writeGoFile(t, projectRoot, "greet.go", `package main
+
+func Greet() string {
+	return "hello"
+}
+`)
+	_, err := idx.IndexRepo(ctx, "repo", projectRoot)
+	require.NoError(t, err)
+
+	sym, _, err := store.GetSymbolWithDependencies(ctx, db, "repo", "Greet", 0)
+	require.NoError(t, err)
+	_, err = store.SaveMemory(ctx, db, &models.Memory{
+		SymbolID:        &sym.ID,
+		Note:            "Greet returns a greeting string.",
+		Author:          "agent",
+		LastKnownSymbol: sym.QualifiedName,
+		LastKnownFile:   sym.FilePath,
+	})
+	require.NoError(t, err)
+	// Without the snapshot taken before the symbol is replaced, a memory saved
+	// without its last known name and file could not be relinked.
+	_, err = db.ExecContext(ctx, `UPDATE memories SET last_known_symbol = NULL, last_known_file = NULL`)
+	require.NoError(t, err)
+
+	stats, err := idx.WithForce(true).IndexRepo(ctx, "repo", projectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.MemoriesOrphaned)
+	assert.Equal(t, 1, stats.MemoriesRelinked)
+
+	newSym, _, err := store.GetSymbolWithDependencies(ctx, db, "repo", "Greet", 0)
+	require.NoError(t, err)
+	assert.NotEqual(t, sym.ID, newSym.ID, "a forced re-index replaces the symbol")
+
+	linked, err := store.GetMemoriesBySymbolID(ctx, db, newSym.ID)
+	require.NoError(t, err)
+	require.Len(t, linked, 1, "memory must be relinked to the new symbol")
+	assert.Equal(t, "Greet returns a greeting string.", linked[0].Note)
+	assert.False(t, linked[0].IsStale)
+	assert.Empty(t, linked[0].StaleReason)
+
+	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "repo", "Greet", "greet.go")
+	require.NoError(t, err)
+	assert.Empty(t, orphans)
+}
