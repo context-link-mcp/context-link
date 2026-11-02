@@ -110,6 +110,7 @@ func saveMemoryHandler(db *store.DB, repoName string) server.ToolHandlerFunc {
 
 		mem := &models.Memory{
 			SymbolID:        &sym.ID,
+			RepoName:        repoName,
 			Note:            note,
 			Author:          author,
 			LastKnownSymbol: sym.QualifiedName,

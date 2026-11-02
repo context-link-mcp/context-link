@@ -212,6 +212,7 @@ func TestGetOrphanedMemoriesBySymbol(t *testing.T) {
 	// Orphaned memory (no symbol_id).
 	mem := &models.Memory{
 		SymbolID:        nil,
+		RepoName:        "repo",
 		Note:            "orphaned note",
 		Author:          "agent",
 		LastKnownSymbol: "deletedFunc",
@@ -220,7 +221,7 @@ func TestGetOrphanedMemoriesBySymbol(t *testing.T) {
 	_, err := store.SaveMemory(ctx, db, mem)
 	require.NoError(t, err)
 
-	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "deletedFunc", "gone.go")
+	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "repo", "deletedFunc", "gone.go")
 	require.NoError(t, err)
 	assert.Len(t, orphans, 1)
 	assert.Equal(t, "orphaned note", orphans[0].Note)
@@ -323,6 +324,7 @@ func TestPurgeStaleMemories_OrphanedOnly(t *testing.T) {
 	// Orphaned stale memory.
 	mem := &models.Memory{
 		SymbolID:        nil,
+		RepoName:        "repo",
 		Note:            "orphaned stale",
 		Author:          "agent",
 		LastKnownSymbol: "dead",
