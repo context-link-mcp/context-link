@@ -472,10 +472,12 @@ func enclosingSymbol(syms []models.Symbol, line int) (models.Symbol, bool) {
 }
 
 // relinkOrphanedMemories scans newly indexed symbols and re-links any orphaned
-// memories that have matching last_known_symbol + last_known_file.
+// memories of repoName that have matching last_known_symbol + last_known_file.
+// Orphans are scoped by repo so a note never attaches to another repo's
+// symbol at the same path.
 func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string, filePaths []string, symbolsByFile map[string][]models.Symbol) int {
 	// Batch-load all orphaned memories (single query instead of per-symbol lookups).
-	orphanMap, err := store.GetAllOrphanedMemories(ctx, idx.db)
+	orphanMap, err := store.GetAllOrphanedMemories(ctx, idx.db, repoName)
 	if err != nil {
 		slog.Warn("indexer: failed to load orphaned memories", "error", err)
 		return 0

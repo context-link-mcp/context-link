@@ -16,6 +16,9 @@ var ErrMemoryNotFound = errors.New("memory not found")
 
 // SaveMemory inserts a new memory linked to a symbol.
 // Returns the new memory's ID. Deduplicates by (symbol_id, exact note match).
+// The row's repo_name is mem.RepoName, or the linked symbol's repo when
+// mem.RepoName is empty. A memory with neither stays unattributed (NULL) and is
+// never purged, relinked or returned by repo-scoped reads.
 func SaveMemory(ctx context.Context, db *DB, mem *models.Memory) (int64, error) {
 	if len([]rune(mem.Note)) > 2000 {
 		return 0, fmt.Errorf("store: note exceeds maximum length of 2000 characters")
@@ -37,9 +40,10 @@ func SaveMemory(ctx context.Context, db *DB, mem *models.Memory) (int64, error) 
 	}
 
 	res, err := db.ExecContext(ctx,
-		`INSERT INTO memories (symbol_id, note, author, last_known_symbol, last_known_file)
-		 VALUES (?, ?, ?, ?, ?)`,
-		mem.SymbolID, mem.Note, mem.Author, mem.LastKnownSymbol, mem.LastKnownFile,
+		`INSERT INTO memories (symbol_id, repo_name, note, author, last_known_symbol, last_known_file)
+		 VALUES (?, COALESCE(?, (SELECT repo_name FROM symbols WHERE id = ?)), ?, ?, ?, ?)`,
+		mem.SymbolID, nullString(mem.RepoName), mem.SymbolID,
+		mem.Note, mem.Author, mem.LastKnownSymbol, mem.LastKnownFile,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: failed to insert memory: %w", err)
@@ -54,7 +58,7 @@ func SaveMemory(ctx context.Context, db *DB, mem *models.Memory) (int64, error) 
 // GetMemoriesBySymbolID returns all memories for a given symbol ID.
 func GetMemoriesBySymbolID(ctx context.Context, db *DB, symbolID int64) ([]models.Memory, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, symbol_id, note, author, is_stale, stale_reason,
+		`SELECT id, symbol_id, repo_name, note, author, is_stale, stale_reason,
 		        last_known_symbol, last_known_file, created_at, updated_at
 		 FROM memories WHERE symbol_id = ?
 		 ORDER BY created_at DESC`,
@@ -68,20 +72,23 @@ func GetMemoriesBySymbolID(ctx context.Context, db *DB, symbolID int64) ([]model
 }
 
 // GetMemoriesBySymbolName returns memories for any symbol matching the name (exact or fuzzy).
-// Results include stale memories with IsStale set. Supports pagination.
+// Results include stale memories with IsStale set, and orphaned memories of
+// this repo whose last known symbol matches. Supports pagination.
 func GetMemoriesBySymbolName(ctx context.Context, db *DB, repoName, symbolName string, offset, limit int) ([]models.Memory, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT m.id, m.symbol_id, m.note, m.author, m.is_stale, m.stale_reason,
+		`SELECT m.id, m.symbol_id, m.repo_name, m.note, m.author, m.is_stale, m.stale_reason,
 		        m.last_known_symbol, m.last_known_file, m.created_at, m.updated_at
 		 FROM memories m
-		 JOIN symbols s ON s.id = m.symbol_id
-		 WHERE s.repo_name = ? AND (s.name LIKE ? OR s.qualified_name LIKE ?)
+		 LEFT JOIN symbols s ON s.id = m.symbol_id
+		 WHERE (s.repo_name = ? AND (s.name LIKE ? OR s.qualified_name LIKE ?))
+		    OR (s.id IS NULL AND m.repo_name = ? AND m.last_known_symbol LIKE ?)
 		 ORDER BY m.created_at DESC
 		 LIMIT ? OFFSET ?`,
-		repoName, "%"+symbolName+"%", "%"+symbolName+"%", limit, offset,
+		repoName, "%"+symbolName+"%", "%"+symbolName+"%",
+		repoName, "%"+symbolName+"%", limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to get memories for symbol name %q: %w", symbolName, err)
@@ -90,21 +97,22 @@ func GetMemoriesBySymbolName(ctx context.Context, db *DB, repoName, symbolName s
 	return scanMemories(rows)
 }
 
-// GetMemoriesByFilePath returns memories for all symbols in a given file.
-// Supports pagination.
+// GetMemoriesByFilePath returns memories for all symbols in a given file,
+// plus orphaned memories of this repo last seen in that file. Supports pagination.
 func GetMemoriesByFilePath(ctx context.Context, db *DB, repoName, filePath string, offset, limit int) ([]models.Memory, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT m.id, m.symbol_id, m.note, m.author, m.is_stale, m.stale_reason,
+		`SELECT m.id, m.symbol_id, m.repo_name, m.note, m.author, m.is_stale, m.stale_reason,
 		        m.last_known_symbol, m.last_known_file, m.created_at, m.updated_at
 		 FROM memories m
-		 JOIN symbols s ON s.id = m.symbol_id
-		 WHERE s.repo_name = ? AND s.file_path = ?
+		 LEFT JOIN symbols s ON s.id = m.symbol_id
+		 WHERE (s.repo_name = ? AND s.file_path = ?)
+		    OR (s.id IS NULL AND m.repo_name = ? AND m.last_known_file = ?)
 		 ORDER BY m.created_at DESC
 		 LIMIT ? OFFSET ?`,
-		repoName, filePath, limit, offset,
+		repoName, filePath, repoName, filePath, limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to get memories for file %s: %w", filePath, err)
@@ -113,16 +121,16 @@ func GetMemoriesByFilePath(ctx context.Context, db *DB, repoName, filePath strin
 	return scanMemories(rows)
 }
 
-// GetOrphanedMemoriesBySymbol returns memories that are orphaned (symbol_id IS NULL)
-// and whose last_known_symbol + last_known_file match the given values.
-// Used during orphan recovery after re-indexing.
-func GetOrphanedMemoriesBySymbol(ctx context.Context, db *DB, lastKnownSymbol, lastKnownFile string) ([]models.Memory, error) {
+// GetOrphanedMemoriesBySymbol returns memories of repoName that are orphaned
+// (symbol_id IS NULL) and whose last_known_symbol + last_known_file match the
+// given values. Used during orphan recovery after re-indexing.
+func GetOrphanedMemoriesBySymbol(ctx context.Context, db *DB, repoName, lastKnownSymbol, lastKnownFile string) ([]models.Memory, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, symbol_id, note, author, is_stale, stale_reason,
+		`SELECT id, symbol_id, repo_name, note, author, is_stale, stale_reason,
 		        last_known_symbol, last_known_file, created_at, updated_at
 		 FROM memories
-		 WHERE symbol_id IS NULL AND last_known_symbol = ? AND last_known_file = ?`,
-		lastKnownSymbol, lastKnownFile,
+		 WHERE symbol_id IS NULL AND repo_name = ? AND last_known_symbol = ? AND last_known_file = ?`,
+		repoName, lastKnownSymbol, lastKnownFile,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to get orphaned memories: %w", err)
@@ -131,14 +139,18 @@ func GetOrphanedMemoriesBySymbol(ctx context.Context, db *DB, lastKnownSymbol, l
 	return scanMemories(rows)
 }
 
-// GetAllOrphanedMemories returns all orphaned memories (symbol_id IS NULL),
-// grouped by "qualifiedName\x00filePath" key for fast lookup during relinking.
-func GetAllOrphanedMemories(ctx context.Context, db *DB) (map[string][]models.Memory, error) {
+// GetAllOrphanedMemories returns the orphaned memories (symbol_id IS NULL) of
+// repoName, grouped by "qualifiedName\x00filePath" key for fast lookup during
+// relinking. Unattributed legacy rows (repo_name NULL) are never returned, so
+// they cannot be relinked to another repo's symbol at the same path.
+func GetAllOrphanedMemories(ctx context.Context, db *DB, repoName string) (map[string][]models.Memory, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, symbol_id, note, author, is_stale, stale_reason,
+		`SELECT id, symbol_id, repo_name, note, author, is_stale, stale_reason,
 		        last_known_symbol, last_known_file, created_at, updated_at
 		 FROM memories
-		 WHERE symbol_id IS NULL AND last_known_symbol IS NOT NULL AND last_known_file IS NOT NULL`,
+		 WHERE symbol_id IS NULL AND repo_name = ?
+		   AND last_known_symbol IS NOT NULL AND last_known_file IS NOT NULL`,
+		repoName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to get all orphaned memories: %w", err)
@@ -168,6 +180,7 @@ func SnapshotAndMarkStale(ctx context.Context, db *DB, symbolID int64, qualified
 		     stale_reason = ?,
 		     last_known_symbol = ?,
 		     last_known_file = ?,
+		     repo_name = COALESCE(repo_name, (SELECT repo_name FROM symbols WHERE id = memories.symbol_id)),
 		     updated_at = ?
 		 WHERE symbol_id = ? AND is_stale = 0`,
 		reason, qualifiedName, filePath, time.Now().UTC(), symbolID,
@@ -187,8 +200,11 @@ func SnapshotAndMarkStale(ctx context.Context, db *DB, symbolID int64, qualified
 // become orphaned regardless of FK cascade support in the driver.
 func DetachMemoriesFromSymbol(ctx context.Context, db *DB, symbolID int64) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE memories SET symbol_id = NULL WHERE symbol_id = ?`,
-		symbolID,
+		`UPDATE memories
+		 SET repo_name = COALESCE(repo_name, (SELECT repo_name FROM symbols WHERE id = ?)),
+		     symbol_id = NULL
+		 WHERE symbol_id = ?`,
+		symbolID, symbolID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to detach memories from symbol %d: %w", symbolID, err)
@@ -258,32 +274,33 @@ func CountMemoriesBySymbolIDs(ctx context.Context, db *DB, symbolIDs []int64) (m
 	return counts, rows.Err()
 }
 
-// PurgeStaleMemories deletes stale memories for a repo. If orphanedOnly is true,
-// only deletes memories where symbol_id IS NULL (fully orphaned). Returns purged count.
+// PurgeStaleMemories deletes stale memories of repoName. If orphanedOnly is
+// true, only deletes memories where symbol_id IS NULL (fully orphaned).
+// Returns purged count.
+//
+// A memory belongs to repoName when its repo_name says so, or when it is still
+// linked to one of repoName's symbols. Rows with repo_name NULL and no live
+// link (legacy orphans in a shared DB, see migration 008) are never deleted:
+// they cannot be attributed to this repo, and deleting another repo's note is
+// permanent.
 func PurgeStaleMemories(ctx context.Context, db *DB, repoName string, orphanedOnly bool) (int, error) {
-	var query string
-	if orphanedOnly {
-		query = `DELETE FROM memories WHERE is_stale = 1 AND symbol_id IS NULL
-		         AND id IN (
-		           SELECT m.id FROM memories m
-		           LEFT JOIN symbols s ON s.id = m.symbol_id
-		           WHERE m.is_stale = 1 AND m.symbol_id IS NULL
-		         )`
-	} else {
-		// Delete all stale memories whose linked symbol belongs to the repo,
-		// plus fully orphaned stale memories.
-		query = `DELETE FROM memories WHERE is_stale = 1 AND (
-		           symbol_id IS NULL
-		           OR symbol_id IN (SELECT id FROM symbols WHERE repo_name = ?)
-		         )`
-	}
-
 	var res sql.Result
 	var err error
 	if orphanedOnly {
-		res, err = db.ExecContext(ctx, query)
+		res, err = db.ExecContext(ctx,
+			`DELETE FROM memories
+			 WHERE is_stale = 1 AND symbol_id IS NULL AND repo_name = ?`,
+			repoName,
+		)
 	} else {
-		res, err = db.ExecContext(ctx, query, repoName)
+		res, err = db.ExecContext(ctx,
+			`DELETE FROM memories
+			 WHERE is_stale = 1 AND (
+			   repo_name = ?
+			   OR symbol_id IN (SELECT id FROM symbols WHERE repo_name = ?)
+			 )`,
+			repoName, repoName,
+		)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("store: failed to purge stale memories: %w", err)
@@ -296,13 +313,18 @@ func PurgeStaleMemories(ctx context.Context, db *DB, repoName string, orphanedOn
 	return int(n), nil
 }
 
+// nullString maps "" to SQL NULL.
+func nullString(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
 // scanMemory scans a single memory row from a *sql.Rows cursor.
 func scanMemory(rows *sql.Rows) (models.Memory, error) {
 	var m models.Memory
 	var symbolID sql.NullInt64
-	var staleReason sql.NullString
+	var repoName, staleReason sql.NullString
 	err := rows.Scan(
-		&m.ID, &symbolID, &m.Note, &m.Author, &m.IsStale, &staleReason,
+		&m.ID, &symbolID, &repoName, &m.Note, &m.Author, &m.IsStale, &staleReason,
 		&m.LastKnownSymbol, &m.LastKnownFile, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
@@ -311,6 +333,7 @@ func scanMemory(rows *sql.Rows) (models.Memory, error) {
 	if symbolID.Valid {
 		m.SymbolID = &symbolID.Int64
 	}
+	m.RepoName = repoName.String
 	m.StaleReason = staleReason.String
 	return m, nil
 }

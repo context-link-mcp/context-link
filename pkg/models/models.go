@@ -24,6 +24,7 @@ type Symbol struct {
 type Memory struct {
 	ID               int64
 	SymbolID         *int64 // nullable — SET NULL on symbol delete
+	RepoName         string // owning repo; empty for legacy rows that could not be attributed
 	Note             string
 	Author           string // "agent" or "developer"
 	IsStale          bool

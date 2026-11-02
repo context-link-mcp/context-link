@@ -98,7 +98,7 @@ func Greet() string {
 
 	// The old symbol_id was replaced. Memory was snapshotted before delete.
 	// Query by last_known_symbol to find the now-orphaned memory.
-	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "Greet", "greet.go")
+	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "repo", "Greet", "greet.go")
 	require.NoError(t, err)
 
 	// After Phase 7 orphan recovery the memory should be re-linked to the new symbol.
@@ -162,7 +162,7 @@ func Handler() {}
 	assert.Equal(t, 1, stats.FilesDeleted, "one file should be detected as deleted")
 
 	// --- Step 5: Memory must survive as orphan with stale flag. ---
-	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "Handler", "handler.go")
+	orphans, err := store.GetOrphanedMemoriesBySymbol(ctx, db, "repo", "Handler", "handler.go")
 	require.NoError(t, err)
 	require.Len(t, orphans, 1, "orphaned memory must survive symbol deletion")
 	assert.True(t, orphans[0].IsStale, "orphaned memory must be marked stale")
