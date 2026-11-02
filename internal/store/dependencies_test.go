@@ -200,3 +200,42 @@ func TestDeleteDependenciesByCallerFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, cDeps, 1)
 }
+
+func TestDetachFileDependencies(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	insertTestSymbol(t, db, "repo", "caller", "caller", "function", "src/a.ts")
+	insertTestSymbol(t, db, "repo", "callee", "Svc.callee", "method", "src/b.ts")
+	insertTestSymbol(t, db, "repo", "inner", "inner", "function", "src/b.ts")
+	insertTestSymbol(t, db, "repo", "out", "out", "function", "src/c.ts")
+	insertTestSymbol(t, db, "other", "callee", "callee", "function", "src/b.ts")
+
+	id := func(repo, qn string) int64 {
+		s, err := GetSymbolByQualifiedName(ctx, db, repo, qn)
+		require.NoError(t, err)
+		return s.ID
+	}
+	caller, callee, inner, out := id("repo", "caller"), id("repo", "Svc.callee"), id("repo", "inner"), id("repo", "out")
+	otherCallee := id("other", "callee")
+	require.NoError(t, BatchInsertDependencies(ctx, db, []models.Dependency{
+		{CallerID: caller, CalleeID: callee, Kind: "call"},           // inbound: returned by name
+		{CallerID: inner, CalleeID: callee, Kind: "call"},            // same file: dropped
+		{CallerID: inner, CalleeID: out, Kind: "call"},               // outbound: dropped
+		{CallerID: caller, CalleeID: out, Kind: "call"},              // unrelated: kept
+		{CallerID: otherCallee, CalleeID: otherCallee, Kind: "call"}, // other repo, same path: kept
+	}))
+
+	inbound, err := DetachFileDependencies(ctx, db, "repo", "src/b.ts")
+	require.NoError(t, err)
+	assert.Equal(t, []InboundDependency{{CallerID: caller, CalleeName: "callee", Kind: "call"}}, inbound)
+
+	var remaining int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dependencies`).Scan(&remaining))
+	assert.Equal(t, 2, remaining, "caller->out and the other repo's edge survive")
+	deps, err := GetDependenciesByCaller(ctx, db, caller)
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, out, deps[0].CalleeID)
+}

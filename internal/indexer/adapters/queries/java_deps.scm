@@ -9,16 +9,11 @@
 ) @dependency.import
 
 ; === Method invocations ===
-; foo()
+; foo(), obj.foo(), this.foo(), a.b().foo()
+; The name is the callee whatever the object, so a separate object pattern
+; would only duplicate these deps.
 (method_invocation
   name: (identifier) @dependency.call
-)
-
-; === Object method invocations ===
-; obj.foo()
-(method_invocation
-  object: (identifier) @dependency.call_object
-  name: (identifier) @dependency.call_method
 )
 
 ; === Object creation ===

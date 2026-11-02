@@ -1,5 +1,5 @@
 ; Python Dependency Extraction Query
-; Captures: @dependency.source, @dependency.call
+; Captures: @dependency.source, @dependency.call, @dependency.call_method
 
 ; === Import statements ===
 ; import os
@@ -21,9 +21,10 @@
 
 ; === Method calls / qualified calls ===
 ; os.path.join()
+; self.client.fetch()  (any object; the attribute is the callee)
 (call
   function: (attribute
-    object: (identifier) @dependency.call_object
+    object: (_) @dependency.call_object
     attribute: (identifier) @dependency.call_method
   )
 )
