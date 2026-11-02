@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -145,30 +146,127 @@ func TestWalker_ToModelFiles(t *testing.T) {
 	assert.Equal(t, "abc123", models[0].ContentHash)
 }
 
-func TestMatchPattern(t *testing.T) {
+// TestWalker_Walk_RootNeverIgnored guards against the whole repo being skipped
+// when the root directory itself looks like an ignore pattern.
+func TestWalker_Walk_RootNeverIgnored(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		pattern string
-		path    string
-		want    bool
+		name      string
+		rootName  string
+		gitignore string
+		files     []string
+		want      []string
 	}{
-		{"node_modules", "node_modules/foo/bar.ts", true},
-		{"node_modules", "src/node_modules/bar.ts", true},
-		{"*.test.ts", "src/main.test.ts", true},
-		{"*.test.ts", "src/main.ts", false},
-		{"dist/", "dist/bundle.js", true},
-		{"dist/", "src/dist.ts", false},
-		{"!important.ts", "important.ts", false}, // negation not applied
-		{"src/*.ts", "src/main.ts", true},
+		{
+			name:     "root named vendor",
+			rootName: "vendor",
+			files:    []string{"main.ts", "src/a.ts", "vendor/dep.ts"},
+			want:     []string{"main.ts", "src/a.ts"},
+		},
+		{
+			name:     "root named dist",
+			rootName: "dist",
+			files:    []string{"main.ts", "build/out.ts"},
+			want:     []string{"main.ts"},
+		},
+		{
+			name:      "dotfile pattern",
+			rootName:  "repo",
+			gitignore: ".*\n",
+			files:     []string{"main.ts", ".hidden/a.ts", ".cache.ts", "src/b.ts"},
+			want:      []string{"main.ts", "src/b.ts"},
+		},
+		{
+			name:      "ignore all then negate",
+			rootName:  "repo",
+			gitignore: "*\n!keep.ts\n",
+			files:     []string{"keep.ts", "drop.ts", "src/keep.ts"},
+			want:      []string{"keep.ts"}, // src/ is excluded, so its contents cannot be re-included
+		},
+		{
+			name:      "negate inside an ignored glob",
+			rootName:  "repo",
+			gitignore: "*.ts\n!main.ts\n",
+			files:     []string{"main.ts", "util.ts", "src/main.ts", "src/x.ts"},
+			want:      []string{"main.ts", "src/main.ts"},
+		},
+		{
+			name:      "anchored pattern only matches at root",
+			rootName:  "repo",
+			gitignore: "/gen\n",
+			files:     []string{"gen/a.ts", "src/gen/b.ts", "main.ts"},
+			want:      []string{"main.ts", "src/gen/b.ts"},
+		},
+		{
+			name:      "double star",
+			rootName:  "repo",
+			gitignore: "**/fixtures/**\n!src/fixtures/keep.ts\n",
+			files:     []string{"a/fixtures/x.ts", "src/fixtures/keep.ts", "src/fixtures/drop.ts", "main.ts"},
+			want:      []string{"main.ts", "src/fixtures/keep.ts"},
+		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.pattern+"_"+tt.path, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := matchPattern(tt.pattern, tt.path)
-			assert.Equal(t, tt.want, got, "matchPattern(%q, %q)", tt.pattern, tt.path)
+			root := filepath.Join(t.TempDir(), tt.rootName)
+			if tt.gitignore != "" {
+				createTestFile(t, root, ".gitignore", tt.gitignore)
+			}
+			for _, f := range tt.files {
+				createTestFile(t, root, f, "export const x = 1;")
+			}
+
+			reg := NewLanguageRegistry()
+			require.NoError(t, reg.Register(&mockAdapter{name: "ts", extensions: []string{".ts"}}))
+
+			result, err := NewWalker(reg, root).Walk(context.Background())
+			require.NoError(t, err)
+			var got []string
+			for _, f := range result.Files {
+				got = append(got, f.RelPath)
+			}
+			assert.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
+func TestIgnoreRules_Match(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		patterns string
+		path     string
+		isDir    bool
+		want     bool
+	}{
+		{"basename at depth", "node_modules", "src/node_modules", true, true},
+		{"glob basename", "*.test.ts", "src/main.test.ts", false, true},
+		{"glob basename no match", "*.test.ts", "src/main.ts", false, false},
+		{"dir-only matches dir", "dist/", "dist", true, true},
+		{"dir-only skips file", "dist/", "dist", false, false},
+		{"negation re-includes", "*.ts\n!important.ts", "important.ts", false, false},
+		{"last match wins", "!a.ts\n*.ts", "a.ts", false, true},
+		{"path pattern", "src/*.ts", "src/main.ts", false, true},
+		{"star does not cross slash", "src/*.ts", "src/x/main.ts", false, false},
+		{"anchored at root", "/build", "build", true, true},
+		{"anchored not nested", "/build", "src/build", true, false},
+		{"leading double star", "**/logs", "a/b/logs", true, true},
+		{"middle double star zero dirs", "a/**/b.ts", "a/b.ts", false, true},
+		{"middle double star many dirs", "a/**/b.ts", "a/x/y/b.ts", false, true},
+		{"trailing double star excludes contents", "a/**", "a/x.ts", false, true},
+		{"trailing double star keeps the dir itself", "a/**", "a", true, false},
+		{"escaped bang is literal", `\!x.ts`, "!x.ts", false, true},
+		{"comment ignored", "# *.ts", "a.ts", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rules := parseIgnoreRules(strings.NewReader(tt.patterns))
+			assert.Equal(t, tt.want, rules.match(tt.path, tt.isDir), "%q vs %q", tt.patterns, tt.path)
 		})
 	}
 }

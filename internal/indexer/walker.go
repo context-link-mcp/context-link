@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,7 +70,7 @@ func NewWalker(registry *LanguageRegistry, repoRoot string) *Walker {
 // It respects .gitignore patterns and skips files exceeding maxFileSize.
 // Phase 1 discovers files (no I/O beyond stat), Phase 2 hashes in parallel.
 func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
-	gitignorePatterns := w.loadGitignore()
+	gitignore := w.loadGitignore()
 
 	// Phase 1: Discover files (no hashing — fast directory traversal).
 	type candidate struct {
@@ -92,6 +94,12 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 		}
 
 		if d.IsDir() {
+			// Ignore rules apply to entries inside the root, never to the
+			// root itself (a repo checked out as "vendor" or a ".*" rule).
+			if path == w.repoRoot {
+				return nil
+			}
+
 			name := d.Name()
 			for _, pattern := range w.ignorePatterns {
 				if name == pattern {
@@ -100,8 +108,7 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			}
 
 			relDir, _ := filepath.Rel(w.repoRoot, path)
-			relDir = filepath.ToSlash(relDir)
-			if w.matchesGitignore(relDir+"/", gitignorePatterns) {
+			if gitignore.match(filepath.ToSlash(relDir), true) {
 				return fs.SkipDir
 			}
 
@@ -120,7 +127,7 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 		}
 		relPath = filepath.ToSlash(relPath)
 
-		if w.matchesGitignore(relPath, gitignorePatterns) {
+		if gitignore.match(relPath, false) {
 			return nil
 		}
 
@@ -212,93 +219,119 @@ func (w *Walker) ToModelFiles(files []DiscoveredFile, repoName string) []models.
 	return result
 }
 
-// loadGitignore reads .gitignore from the repo root and returns the patterns.
-func (w *Walker) loadGitignore() []string {
-	gitignorePath := filepath.Join(w.repoRoot, ".gitignore")
-	f, err := os.Open(gitignorePath)
+// loadGitignore reads .gitignore from the repo root and returns its rules.
+// Nested .gitignore files are not read.
+func (w *Walker) loadGitignore() ignoreRules {
+	f, err := os.Open(filepath.Join(w.repoRoot, ".gitignore"))
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
+	return parseIgnoreRules(f)
+}
 
-	var patterns []string
-	scanner := bufio.NewScanner(f)
+// ignoreRule is one parsed .gitignore line.
+type ignoreRule struct {
+	segments []string // pattern split on "/"; a lone "**" segment spans directories
+	negate   bool     // "!pattern": re-include a path an earlier rule excluded
+	dirOnly  bool     // "pattern/": matches directories only
+	anchored bool     // the pattern has a "/" before its end: match the whole path from the root
+}
+
+// ignoreRules is an ordered list of .gitignore rules. The last matching rule
+// decides, as in git.
+type ignoreRules []ignoreRule
+
+// parseIgnoreRules parses .gitignore content. Blank lines and "#" comments are
+// skipped, and a leading backslash escapes "#" or "!".
+func parseIgnoreRules(r io.Reader) ignoreRules {
+	var rules ignoreRules
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimRight(scanner.Text(), " \t\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		patterns = append(patterns, line)
+		var rule ignoreRule
+		if strings.HasPrefix(line, "!") {
+			rule.negate = true
+			line = line[1:]
+		} else if strings.HasPrefix(line, `\!`) || strings.HasPrefix(line, `\#`) {
+			line = line[1:]
+		}
+		if strings.HasSuffix(line, "/") {
+			rule.dirOnly = true
+			line = strings.TrimRight(line, "/")
+		}
+		if strings.Contains(line, "/") {
+			rule.anchored = true
+			line = strings.TrimPrefix(line, "/")
+		}
+		if line == "" {
+			continue
+		}
+		rule.segments = strings.Split(line, "/")
+		rules = append(rules, rule)
 	}
-	return patterns
+	return rules
 }
 
-// matchesGitignore checks if a path matches any gitignore pattern.
-// This is a simplified implementation supporting:
-// - Exact directory matches (pattern ending with /)
-// - Simple glob patterns with * wildcard
-// - Prefix matches
-func (w *Walker) matchesGitignore(relPath string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if matchPattern(pattern, relPath) {
-			return true
+// match reports whether relPath (slash-separated, relative to the repo root)
+// is ignored. It evaluates only relPath itself: the walker prunes ignored
+// directories, so the contents of an excluded directory are never reached,
+// matching git's rule that they cannot be re-included.
+func (rules ignoreRules) match(relPath string, isDir bool) bool {
+	ignored := false
+	parts := strings.Split(relPath, "/")
+	for _, rule := range rules {
+		if rule.dirOnly && !isDir {
+			continue
+		}
+		var ok bool
+		if rule.anchored {
+			ok = matchSegments(rule.segments, parts)
+		} else {
+			ok = matchSegment(rule.segments[0], parts[len(parts)-1])
+		}
+		if ok {
+			ignored = !rule.negate
 		}
 	}
-	return false
+	return ignored
 }
 
-// matchPattern matches a single gitignore-style pattern against a path.
-func matchPattern(pattern, path string) bool {
-	// Negation patterns not supported in simplified implementation.
-	if strings.HasPrefix(pattern, "!") {
-		return false
+// matchSegments matches pattern segments against path segments. "**" matches
+// zero or more directories, or at least one entry when it ends the pattern
+// ("dir/**" matches everything inside dir but not dir itself).
+func matchSegments(pattern, parts []string) bool {
+	if len(pattern) == 0 {
+		return len(parts) == 0
 	}
-
-	// Remove leading slash (anchored pattern).
-	pattern = strings.TrimPrefix(pattern, "/")
-
-	// Directory-only pattern.
-	isDir := strings.HasSuffix(pattern, "/")
-	pattern = strings.TrimSuffix(pattern, "/")
-
-	if isDir && !strings.HasSuffix(path, "/") {
-		// Directory pattern only matches directory paths.
-		// Check if path is within this directory.
-		prefix := pattern + "/"
-		return strings.HasPrefix(path, prefix)
-	}
-
-	// Try exact match.
-	if path == pattern {
-		return true
-	}
-
-	// Try basename match (pattern without path separators).
-	if !strings.Contains(pattern, "/") {
-		base := filepath.Base(path)
-		if matched, _ := filepath.Match(pattern, base); matched {
-			return true
+	if pattern[0] == "**" {
+		if len(pattern) == 1 {
+			return len(parts) > 0
 		}
-		// Also check path components.
-		parts := strings.Split(path, "/")
-		for _, part := range parts {
-			if matched, _ := filepath.Match(pattern, part); matched {
+		for i := 0; i <= len(parts); i++ {
+			if matchSegments(pattern[1:], parts[i:]) {
 				return true
 			}
 		}
+		return false
 	}
+	if len(parts) == 0 || !matchSegment(pattern[0], parts[0]) {
+		return false
+	}
+	return matchSegments(pattern[1:], parts[1:])
+}
 
-	// Try glob match on full path.
-	if matched, _ := filepath.Match(pattern, path); matched {
+// matchSegment matches one glob segment against one path component. It uses
+// path.Match, whose "*" never crosses "/" on any OS.
+func matchSegment(pattern, name string) bool {
+	if pattern == "**" {
 		return true
 	}
-
-	// Try prefix match for directory patterns.
-	if strings.HasPrefix(path, pattern+"/") {
-		return true
-	}
-
-	return false
+	ok, _ := path.Match(pattern, name)
+	return ok
 }
 
 // hashFile computes the SHA-256 hex digest of a file's contents.
