@@ -284,12 +284,6 @@ func (idx *Indexer) filterChangedFiles(
 	}
 
 	for _, f := range files {
-		if idx.force {
-			// Force mode: treat every file as changed.
-			changed = append(changed, f)
-			continue
-		}
-
 		dbHash, exists := dbHashIndex[f.RelPath]
 		if !exists {
 			// File not in DB — new file.
@@ -297,13 +291,19 @@ func (idx *Indexer) filterChangedFiles(
 			continue
 		}
 
-		if dbHash == f.ContentHash {
+		if dbHash == f.ContentHash && !idx.force {
 			unchanged++
 			continue
 		}
 
-		// Hash changed — snapshot memories as stale before re-indexing.
-		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, f.RelPath, "hash_changed")
+		// Hash changed, or force mode re-indexes every file: snapshot memories
+		// as stale and detach them before the file's symbols are replaced, so
+		// Phase 7 relinks them by name and file to the new symbol IDs.
+		reason := "hash_changed"
+		if dbHash == f.ContentHash {
+			reason = "reindexed"
+		}
+		orphaned += idx.snapshotMemoriesForFile(ctx, repoName, f.RelPath, reason)
 		changed = append(changed, f)
 	}
 
@@ -356,8 +356,8 @@ func (idx *Indexer) snapshotMemoriesForFile(ctx context.Context, repoName, fileP
 			slog.Warn("indexer: failed to snapshot memories", "symbol", s.QualifiedName, "error", err)
 			continue
 		}
-		// Explicitly null out symbol_id so memories are orphaned regardless of
-		// whether the FK ON DELETE SET NULL cascade fires in the SQLite driver.
+		// Null out symbol_id now rather than relying on ON DELETE SET NULL, so
+		// the memories are orphaned with their snapshot before any delete.
 		if n > 0 {
 			if err := store.DetachMemoriesFromSymbol(ctx, idx.db, s.ID); err != nil {
 				slog.Warn("indexer: failed to detach memories from symbol", "symbol", s.QualifiedName, "error", err)

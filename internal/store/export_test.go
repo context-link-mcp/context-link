@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -22,4 +23,19 @@ func SetupTestDB(t *testing.T) *DB {
 // setupTestDB is an alias for white-box tests (package store).
 func setupTestDB(t *testing.T) *DB {
 	return SetupTestDB(t)
+}
+
+// execWithoutForeignKeys runs query with foreign keys off, to write rows that
+// point at missing symbols as databases from before Open enforced them hold.
+func execWithoutForeignKeys(t *testing.T, db *DB, query string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	defer conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) //nolint:errcheck
+	_, err = conn.ExecContext(ctx, query, args...)
+	require.NoError(t, err)
 }

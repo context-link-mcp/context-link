@@ -193,12 +193,21 @@ func TestUsages_MissingCaller(t *testing.T) {
 	// Insert target and dependency, but without the caller symbol (orphan dep)
 	targetID := insertSymbol(t, db, "repo", "target", "function", "func target() {}")
 
-	// Insert dependency with non-existent caller_id
-	_, err := db.ExecContext(context.Background(), `
+	// Insert dependency with non-existent caller_id. Foreign keys reject it,
+	// so write it as databases from before they were enforced hold it.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 		INSERT INTO dependencies (caller_id, callee_id, kind)
 		VALUES (?, ?, ?)
 	`, 99999, targetID, "call")
 	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
 
 	handler := symbolUsagesHandler(db, "repo", NewSessionTokenTracker())
 	req := mcp.CallToolRequest{}
