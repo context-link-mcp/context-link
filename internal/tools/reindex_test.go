@@ -32,7 +32,7 @@ func TestReindex_NoChanges(t *testing.T) {
 	// Create empty project
 	projectRoot := t.TempDir()
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -75,7 +75,7 @@ func main() {
 }
 `), 0644))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -112,7 +112,7 @@ func main() {}`), 0644))
 	// Delete the file
 	require.NoError(t, os.Remove(goFile))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -149,7 +149,7 @@ func main() {}`), 0644))
 func main() {}
 func newFunc() {}`), 0644))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -187,7 +187,7 @@ func caller() {
 func callee() {}
 `), 0644))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -217,7 +217,7 @@ func TestReindex_FTSUpdate(t *testing.T) {
 	require.NoError(t, os.WriteFile(goFile, []byte(`package main
 func main() {}`), 0644))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -251,7 +251,7 @@ func TestReindex_EmbeddingUpdate(t *testing.T) {
 	require.NoError(t, os.WriteFile(goFile, []byte(`package main
 func main() {}`), 0644))
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -284,7 +284,7 @@ func TestReindex_LargeRepo(t *testing.T) {
 func testFunc() {}`), 0644))
 	}
 
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -319,7 +319,7 @@ func TestReindex_PartialIndexing(t *testing.T) {
 func main() {}`), 0644))
 
 	// The indexer should gracefully handle the valid file
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 
@@ -348,7 +348,7 @@ func TestReindex_TimeoutBehavior(t *testing.T) {
 func main() {}`), 0644))
 
 	// The handler should complete within the timeout
-	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker())
+	handler := reindexHandler(idx, "repo", projectRoot, NewSessionTokenTracker(), nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
 

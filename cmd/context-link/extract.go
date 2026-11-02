@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -114,13 +113,9 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	if flagProjectRoot != "" {
 		cfg.ProjectRoot = flagProjectRoot
 	}
-	root, err := filepath.Abs(cfg.ProjectRoot)
+	root, repoName, err := config.ResolveProject(cfg.ProjectRoot, flagExtractRepoName)
 	if err != nil {
-		return &exitError{exitUsage, fmt.Errorf("failed to resolve project root: %w", err)}
-	}
-	repoName := flagExtractRepoName
-	if repoName == "" {
-		repoName = filepath.Base(root)
+		return &exitError{exitUsage, err}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -288,6 +288,7 @@ Packing order: full bodies of the best matches, then the code of their direct de
 ```bash
 ./bin/context-link index --project-root /path/to/repo-a --repo-name repo-a
 ./bin/context-link index --project-root /path/to/repo-b --repo-name repo-b
+./bin/context-link serve --project-root /path/to/repo-a --repo-name repo-a
 ```
 
 ### Manual Server Testing
@@ -385,6 +386,7 @@ Exit codes: `0` ok, `1` usage error, `2` index unusable (callers can continue wi
 |---|---|---|---|
 | **Behavior** | `--watch` | `false` | Auto re-index on file changes (fsnotify with 500ms debounce) |
 |  | `--tools` | _(all)_ | Comma-separated list of MCP tools to enable (e.g., `ping,get_code_by_symbol`) |
+|  | `--repo-name` | Directory name | Repository to serve; must match the `--repo-name` given to `index` |
 | **Embeddings** _(Advanced)_ | `--model-path` | _(built-in)_ | Path to custom ONNX model (overrides built-in Model2Vec) |
 |  | `--vocab-path` | _(built-in)_ | Path to `vocab.txt` for the ONNX tokenizer |
 |  | `--ort-lib-path` | _(system)_ | Path to OnnxRuntime shared library |

@@ -471,3 +471,38 @@ func TestWatcher_MultipleRapidChanges(t *testing.T) {
 	assert.Len(t, w.pending, 0, "pending should be cleared after flush")
 	w.mu.Unlock()
 }
+
+// TestWatcher_FlushCallsOnIndexed is the H2 regression for --watch: every
+// re-index the watcher runs must fire the OnIndexed hook so serve can drop
+// its vector cache. A flush with nothing pending runs no index and no hook.
+func TestWatcher_FlushCallsOnIndexed(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	db := setupTestDB(t)
+	var calls int
+	var mu sync.Mutex
+	w := New(buildTestRegistry(t), db, &mockEmbedder{}, root, "test-repo", 1).
+		WithOnIndexed(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+		})
+
+	ctx := context.Background()
+	w.flush(ctx)
+	mu.Lock()
+	assert.Equal(t, 0, calls, "no pending files: no index run, no hook")
+	mu.Unlock()
+
+	testFile := filepath.Join(root, "example.go")
+	require.NoError(t, os.WriteFile(testFile, []byte("package main\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644))
+	w.mu.Lock()
+	w.pending[testFile] = struct{}{}
+	w.mu.Unlock()
+	w.flush(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, calls, "hook must fire after the re-index")
+}

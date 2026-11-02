@@ -30,6 +30,10 @@ type Server struct {
 	embedder vectorstore.Embedder
 	indexer  *indexer.Indexer
 	version  string
+
+	// vecCache holds the repo's embeddings for semantic_search_symbols. It
+	// must be dropped after every index run (see NotifyIndexed).
+	vecCache *vectorstore.VectorCache
 }
 
 // New creates and configures a new Server with all registered tools and prompts.
@@ -50,11 +54,30 @@ func New(cfg *config.Config, db *store.DB, embedder vectorstore.Embedder, idx *i
 		indexer:  idx,
 		version:  version,
 	}
+	s.vecCache = vectorstore.NewVectorCache(s.repoName())
 
 	s.registerTools()
 	s.registerPrompts()
 
 	return s
+}
+
+// repoName is the namespace every tool queries: cfg.RepoName when set (the
+// CLI sets it from --repo-name, as index does), else the root's directory name.
+func (s *Server) repoName() string {
+	if s.cfg.RepoName != "" {
+		return s.cfg.RepoName
+	}
+	return filepath.Base(filepath.Clean(s.cfg.ProjectRoot))
+}
+
+// NotifyIndexed drops the caches derived from the index so the next query
+// reloads them. Call it after every index run of the served repo, whether it
+// succeeded or not (a failed run may still have committed some files): the
+// reindex_project tool calls it itself, and the --watch watcher is wired to
+// it. Safe to call concurrently with in-flight searches.
+func (s *Server) NotifyIndexed() {
+	s.vecCache.Invalidate()
 }
 
 // toolRegistration pairs a tool name with its registration function.
@@ -67,16 +90,16 @@ type toolRegistration struct {
 // If cfg.Tools is non-empty, only the listed tools are registered.
 // Every handler is wrapped with a 30-second timeout.
 func (s *Server) registerTools() {
-	repoName := filepath.Base(s.cfg.ProjectRoot)
+	repoName := s.repoName()
 	timeout := tools.DefaultToolTimeout
-	vecCache := vectorstore.NewVectorCache(repoName)
+	vecCache := s.vecCache
 	tracker := tools.NewSessionTokenTracker()
 
 	registry := []toolRegistration{
 		{"ping", func() { tools.RegisterPingTool(s.mcp, s.version) }},
 		{"reindex_project", func() {
 			if s.indexer != nil {
-				tools.RegisterReindexTool(s.mcp, s.indexer, repoName, s.cfg.ProjectRoot, tracker)
+				tools.RegisterReindexTool(s.mcp, s.indexer, repoName, s.cfg.ProjectRoot, tracker, s.NotifyIndexed)
 			}
 		}},
 		{"get_modified_symbols", func() { tools.RegisterModifiedSymbolsTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},

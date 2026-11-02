@@ -10,8 +10,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"path/filepath"
-
 	"github.com/spf13/cobra"
 
 	"github.com/context-link-mcp/context-link/internal/config"
@@ -100,7 +98,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagConfigFile, "config", "", "config file (default: .context-link.yaml in current dir)")
 
 	// Index-specific flags.
-	indexCmd.Flags().StringVar(&flagRepoName, "repo-name", "", "repository name for multi-repo namespacing (default: directory name)")
+	// --repo-name (index and serve): both commands must agree on the name.
+	for _, cmd := range []*cobra.Command{serveCmd, indexCmd} {
+		cmd.Flags().StringVar(&flagRepoName, "repo-name", "", "repository name for multi-repo namespacing (default: directory name)")
+	}
 	indexCmd.Flags().IntVar(&flagWorkers, "workers", 4, "number of parallel worker goroutines for indexing")
 	indexCmd.Flags().BoolVar(&flagForce, "force", false, "force full re-index, bypassing incremental hash check")
 
@@ -138,21 +139,9 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		cfg.ProjectRoot = flagProjectRoot
 	}
 
-	// Determine the path to index (always resolve to absolute so that
-	// filepath.Base returns a real directory name, not ".").
-	indexPath := cfg.ProjectRoot
-	if len(args) > 0 {
-		indexPath = args[0]
-	}
-	indexPath, err = filepath.Abs(indexPath)
+	indexPath, repoName, err := resolveIndexTarget(cfg, args, flagRepoName)
 	if err != nil {
-		return fmt.Errorf("failed to resolve index path %s: %w", indexPath, err)
-	}
-
-	// Determine repo name.
-	repoName := flagRepoName
-	if repoName == "" {
-		repoName = filepath.Base(indexPath)
+		return err
 	}
 
 	// Open and migrate the database.
@@ -229,6 +218,28 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  Errors:               %d\n", stats.Errors)
 	fmt.Fprintf(os.Stderr, "  Duration:             %s\n", stats.Duration)
 
+	return nil
+}
+
+// resolveIndexTarget returns the absolute path to index and its repo name:
+// the optional [path] argument overrides the project root.
+func resolveIndexTarget(cfg *config.Config, args []string, repoNameFlag string) (string, string, error) {
+	indexPath := cfg.ProjectRoot
+	if len(args) > 0 {
+		indexPath = args[0]
+	}
+	return config.ResolveProject(indexPath, repoNameFlag)
+}
+
+// resolveServeProject makes cfg.ProjectRoot absolute and sets cfg.RepoName,
+// exactly as index resolves them, so serve queries the rows index wrote.
+func resolveServeProject(cfg *config.Config, repoNameFlag string) error {
+	root, repoName, err := config.ResolveProject(cfg.ProjectRoot, repoNameFlag)
+	if err != nil {
+		return err
+	}
+	cfg.ProjectRoot = root
+	cfg.RepoName = repoName
 	return nil
 }
 
@@ -318,6 +329,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if flagLogLevel != "" {
 		cfg.LogLevel = flagLogLevel
 	}
+	if err := resolveServeProject(cfg, flagRepoName); err != nil {
+		return err
+	}
 
 	// Open and migrate the database.
 	db, err := store.Open(cfg.DBPath)
@@ -370,7 +384,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Build language registry and indexer for reindex_project tool.
 	registry := buildLanguageRegistry()
-	repoName := filepath.Base(cfg.ProjectRoot)
 	idx := indexer.NewIndexer(registry, db, 4, embedder)
 
 	// Build MCP server with all tools registered.
@@ -382,7 +395,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Start file watcher if --watch is enabled.
 	if flagWatch {
-		w := watcher.New(registry, db, embedder, cfg.ProjectRoot, repoName, 4)
+		// Same root and repo name as reindex_project; every watcher re-index
+		// drops the server's index-derived caches.
+		w := watcher.New(registry, db, embedder, cfg.ProjectRoot, cfg.RepoName, 4).
+			WithOnIndexed(srv.NotifyIndexed)
 		go func() {
 			if err := w.Watch(ctx); err != nil {
 				slog.Error("file watcher failed", "error", err)
