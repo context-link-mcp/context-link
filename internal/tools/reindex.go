@@ -18,11 +18,14 @@ const ReindexTimeout = 5 * time.Minute
 
 // RegisterReindexTool registers the reindex_project tool with the MCP server.
 // This tool triggers an incremental re-index of the project to keep the symbol graph current.
+// onIndexed, if non-nil, runs after every index attempt (success or failure)
+// so callers can drop caches derived from the index.
 func RegisterReindexTool(
 	s *server.MCPServer,
 	idx *indexer.Indexer,
 	repoName, repoRoot string,
 	tracker *SessionTokenTracker,
+	onIndexed func(),
 ) {
 	tool := mcp.NewTool("reindex_project",
 		mcp.WithDescription(
@@ -35,7 +38,7 @@ func RegisterReindexTool(
 		),
 	)
 
-	s.AddTool(tool, WithTimeout(ReindexTimeout, reindexHandler(idx, repoName, repoRoot, tracker)))
+	s.AddTool(tool, WithTimeout(ReindexTimeout, reindexHandler(idx, repoName, repoRoot, tracker, onIndexed)))
 }
 
 // reindexHandler returns the MCP tool handler for the reindex_project tool.
@@ -43,12 +46,16 @@ func reindexHandler(
 	idx *indexer.Indexer,
 	repoName, repoRoot string,
 	tracker *SessionTokenTracker,
+	onIndexed func(),
 ) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
 		// Run incremental index (never force).
 		stats, err := idx.IndexRepo(ctx, repoName, repoRoot)
+		if onIndexed != nil {
+			onIndexed()
+		}
 		if err != nil {
 			return mcp.NewToolResultError("reindex failed: " + err.Error()), nil
 		}

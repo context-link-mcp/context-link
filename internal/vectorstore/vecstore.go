@@ -40,7 +40,8 @@ func topKFromHeap(h *candidateHeap) []SearchResult {
 }
 
 // VectorCache holds pre-loaded embeddings in memory for fast KNN search.
-// Thread-safe for concurrent reads; invalidated on writes.
+// Safe for concurrent use. Whoever writes the repo's embeddings must call
+// Invalidate afterwards, or searches keep returning the old IDs and vectors.
 type VectorCache struct {
 	mu        sync.RWMutex
 	symbolIDs []int64     // parallel arrays
@@ -54,7 +55,8 @@ func NewVectorCache(repoName string) *VectorCache {
 	return &VectorCache{repoName: repoName}
 }
 
-// Invalidate clears the cache, forcing a reload on next search.
+// Invalidate clears the cache, forcing a reload on next search. Searches
+// already running finish on the snapshot they started with.
 func (vc *VectorCache) Invalidate() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
@@ -63,11 +65,30 @@ func (vc *VectorCache) Invalidate() {
 	vc.vectors = nil
 }
 
-// load populates the cache from the database if not already loaded.
-func (vc *VectorCache) load(ctx context.Context, db *store.DB) error {
+// snapshot returns the cached IDs and vectors, loading them from the database
+// first if needed. The returned slices are never mutated afterwards
+// (Invalidate and loadLocked replace them), so callers may read them without
+// holding the lock; a concurrent Invalidate cannot empty a search midway.
+func (vc *VectorCache) snapshot(ctx context.Context, db *store.DB) ([]int64, [][]float32, error) {
+	vc.mu.RLock()
+	if vc.loaded {
+		ids, vecs := vc.symbolIDs, vc.vectors
+		vc.mu.RUnlock()
+		return ids, vecs, nil
+	}
+	vc.mu.RUnlock()
+
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
+	if err := vc.loadLocked(ctx, db); err != nil {
+		return nil, nil, err
+	}
+	return vc.symbolIDs, vc.vectors, nil
+}
 
+// loadLocked populates the cache from the database if not already loaded.
+// The caller must hold vc.mu for writing.
+func (vc *VectorCache) loadLocked(ctx context.Context, db *store.DB) error {
 	if vc.loaded {
 		return nil
 	}
@@ -111,20 +132,18 @@ func KNNSearchCached(
 	topK int,
 	minSimilarity float32,
 ) ([]SearchResult, error) {
-	if err := cache.load(ctx, db); err != nil {
+	ids, vecs, err := cache.snapshot(ctx, db)
+	if err != nil {
 		return nil, err
 	}
-
-	cache.mu.RLock()
-	defer cache.mu.RUnlock()
 
 	h := &candidateHeap{}
 	heap.Init(h)
 
-	for i, vec := range cache.vectors {
+	for i, vec := range vecs {
 		sim := dotProduct(query, vec)
 		if sim >= minSimilarity {
-			heap.Push(h, candidate{cache.symbolIDs[i], sim})
+			heap.Push(h, candidate{ids[i], sim})
 			if topK > 0 && h.Len() > topK {
 				heap.Pop(h)
 			}

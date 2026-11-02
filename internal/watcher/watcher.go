@@ -47,6 +47,9 @@ type Watcher struct {
 	workers  int
 	debounce time.Duration
 
+	// onIndexed, if non-nil, runs after every re-index attempt.
+	onIndexed func()
+
 	mu      sync.Mutex
 	pending map[string]struct{}
 	timer   *time.Timer
@@ -64,6 +67,14 @@ func New(registry *indexer.LanguageRegistry, db *store.DB, embedder vectorstore.
 		debounce: 500 * time.Millisecond,
 		pending:  make(map[string]struct{}),
 	}
+}
+
+// WithOnIndexed sets a hook that runs after every re-index attempt the
+// watcher makes (success or failure), e.g. to drop caches derived from the
+// index. It must be set before Watch is called. Returns w for chaining.
+func (w *Watcher) WithOnIndexed(fn func()) *Watcher {
+	w.onIndexed = fn
+	return w
 }
 
 // Watch starts watching the project directory for file changes.
@@ -189,6 +200,9 @@ func (w *Watcher) flush(ctx context.Context) {
 
 	idx := indexer.NewIndexer(w.registry, w.db, w.workers, w.embedder)
 	stats, err := idx.IndexRepo(ctx, w.repoName, w.repoRoot)
+	if w.onIndexed != nil {
+		w.onIndexed()
+	}
 	if err != nil {
 		slog.Error("re-index failed", "error", err)
 		return

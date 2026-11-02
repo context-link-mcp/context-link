@@ -19,6 +19,10 @@ type Config struct {
 	DBPath string `mapstructure:"db_path"`
 	// ProjectRoot is the root directory of the project to index.
 	ProjectRoot string `mapstructure:"project_root"`
+	// RepoName namespaces the project's rows in the database. It is set from
+	// the --repo-name flag (see ResolveProject); when empty, consumers derive
+	// it from filepath.Base(ProjectRoot). Not read from the config file.
+	RepoName string `mapstructure:"-"`
 	// LogLevel controls verbosity: "debug", "info", "warn", "error".
 	LogLevel string `mapstructure:"log_level"`
 
@@ -94,4 +98,20 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// ResolveProject returns the absolute, cleaned project root and the repo name
+// used to namespace it. An empty repoName defaults to the root's directory
+// name. index, extract and serve all resolve through this function so that a
+// relative root such as "." yields the same repo name in every command.
+func ResolveProject(root, repoName string) (absRoot, name string, err error) {
+	absRoot, err = filepath.Abs(root) // Abs also cleans the path.
+	if err != nil {
+		return "", "", fmt.Errorf("config: failed to resolve project root %q: %w", root, err)
+	}
+	name = repoName
+	if name == "" {
+		name = filepath.Base(absRoot)
+	}
+	return absRoot, name, nil
 }
