@@ -112,11 +112,21 @@ func TestResolveDependenciesAttributesCallsToEnclosingSymbol(t *testing.T) {
 	assert.Len(t, callers, 2, "module-level print(helper()) has no calling symbol")
 }
 
-// TestReresolveMigrationForcesFullReindex checks that after migration 007 the
-// next normal index re-processes every file and rebuilds the edges, and that
-// memories end up linked to the re-indexed symbols and not stale.
+// TestReresolveMigrationForcesFullReindex checks that after migration 007 (or
+// 009, which repeats it for method-call edges) the next normal index
+// re-processes every file and rebuilds the edges, and that memories end up
+// linked to the re-indexed symbols and not stale.
 func TestReresolveMigrationForcesFullReindex(t *testing.T) {
 	t.Parallel()
+	for _, migration := range []string{"007_reresolve_dependencies.sql", "009_reresolve_method_call_edges.sql"} {
+		t.Run(migration, func(t *testing.T) {
+			t.Parallel()
+			testReresolveMigration(t, migration)
+		})
+	}
+}
+
+func testReresolveMigration(t *testing.T, migration string) {
 	ctx := context.Background()
 	db := setupTestDB(t)
 
@@ -138,7 +148,7 @@ func TestReresolveMigrationForcesFullReindex(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate an index built before the migration existed, then upgrade.
-	_, err = db.ExecContext(ctx, `DELETE FROM schema_version WHERE filename = '007_reresolve_dependencies.sql'`)
+	_, err = db.ExecContext(ctx, `DELETE FROM schema_version WHERE filename = ?`, migration)
 	require.NoError(t, err)
 	require.NoError(t, store.Migrate(db))
 

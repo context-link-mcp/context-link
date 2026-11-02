@@ -325,7 +325,10 @@ func (e *Extractor) processDependencyMatch(
 				Line:       line,
 			})
 
-		case "dependency.call":
+		case "dependency.call", "dependency.call_method":
+			// call_method is the method/function name of a selector call
+			// (s.Load(), pkg.Func(), self.helper()); its call_object
+			// receiver is not a callee, so it is ignored.
 			deps = append(deps, ExtractedDep{
 				Kind:       "call",
 				Symbol:     content,

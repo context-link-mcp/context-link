@@ -1,5 +1,5 @@
 ; TypeScript Dependency Extraction Query
-; Captures: @dependency.import, @dependency.call, @dependency.extends, @dependency.implements
+; Captures: @dependency.import, @dependency.call, @dependency.call_method, @dependency.extends, @dependency.implements
 
 ; === Import statements ===
 ; import { foo } from './bar'
@@ -26,9 +26,10 @@
 
 ; === Method calls ===
 ; foo.bar()
+; this.client.send()  (any object; the property is the callee)
 (call_expression
   function: (member_expression
-    object: (identifier) @dependency.call_object
+    object: (_) @dependency.call_object
     property: (property_identifier) @dependency.call_method
   )
 )
