@@ -30,8 +30,14 @@ const ProfileThreatModel = "threat-model"
 const (
 	DefaultBudgetBytes       = 50000
 	DefaultMaxSymbolsPerFile = 3
-	defaultTopKPerQuery      = 10
-	minSimilarity            = 0.3
+	// DefaultDependencyReservePercent is the CLI default for
+	// Options.DependencyReservePercent.
+	DefaultDependencyReservePercent = 25
+	// MaxDependencyReservePercent caps Options.DependencyReservePercent so
+	// matches always keep part of the budget.
+	MaxDependencyReservePercent = 90
+	defaultTopKPerQuery         = 10
+	minSimilarity               = 0.3
 	// entryPointBoost lifts entry-point handlers in the threat-model profile.
 	// RRF scores are ~1/(60+rank) ≈ 0.016, so this is about two top ranks.
 	entryPointBoost = 0.03
@@ -58,6 +64,13 @@ type Options struct {
 	// SkipDependencyCode lists direct dependencies as references only instead
 	// of also packing their code (CLI: --dependency-depth 0).
 	SkipDependencyCode bool
+	// DependencyReservePercent is the share of BudgetBytes (0-90) that
+	// matches may not use in the first packing pass, kept for the code of
+	// their direct dependencies. Whatever the dependencies leave unused goes
+	// back to the remaining matches, then to skeletons. 0 disables the
+	// reserve; the CLI default is DefaultDependencyReservePercent. Ignored
+	// with SkipDependencyCode.
+	DependencyReservePercent int
 }
 
 // IndexInfo describes the index the extraction ran against. The caller fills
@@ -177,6 +190,7 @@ func Run(
 	if opts.MaxSymbolsPerFile <= 0 {
 		opts.MaxSymbolsPerFile = DefaultMaxSymbolsPerFile
 	}
+	opts.DependencyReservePercent = min(max(opts.DependencyReservePercent, 0), MaxDependencyReservePercent)
 
 	queries := append([]string(nil), opts.Queries...)
 	switch opts.Profile {
@@ -401,9 +415,11 @@ type packStats struct {
 	droppedDeps  int // dependencies listed as references only for lack of budget
 }
 
-// pack fills the budget in three passes: full bodies of the best matches,
-// then the code of their direct dependencies, then signature-only skeletons
-// for matching files that did not fit. Files that fit in no form are dropped.
+// pack fills the budget in passes: full bodies of the best matches (outside
+// the dependency reserve), then the code of their direct dependencies, then
+// the remaining matches in whatever budget is left, then signature-only
+// skeletons for matching files that did not fit. Files that fit in no form
+// are dropped.
 func pack(
 	ctx context.Context,
 	db *store.DB,
@@ -430,8 +446,9 @@ func pack(
 		return nil, budget, stats, fmt.Errorf("extract: failed to load dependencies: %w", err)
 	}
 
-	// Pass 1: matches, code tier.
-	for _, c := range candidates {
+	// packMatch adds c's matched symbols as a code-tier file if they fit
+	// within limit, and reports whether they did.
+	packMatch := func(c fileCandidate, limit int) bool {
 		syms := append([]models.Symbol(nil), c.symbols...)
 		sort.Slice(syms, func(i, j int) bool { return syms[i].StartLine < syms[j].StartLine })
 		size := 0
@@ -441,9 +458,8 @@ func pack(
 			}
 			size += len(s.CodeBlock)
 		}
-		if budget.UsedBytes+size > budget.LimitBytes {
-			deferred = append(deferred, c)
-			continue
+		if budget.UsedBytes+size > limit {
+			return false
 		}
 		budget.UsedBytes += size
 		f := &packedFile{path: c.path, tier: "code", reason: c.reason, score: c.score, syms: syms, roles: map[int64]string{}}
@@ -454,6 +470,19 @@ func pack(
 		}
 		order = append(order, f)
 		byPath[c.path] = f
+		return true
+	}
+
+	// Pass 1: matches, code tier, kept out of the dependency reserve so the
+	// best matches' callees are not crowded out by lower-ranked matches.
+	matchLimit := budget.LimitBytes
+	if !opts.SkipDependencyCode && opts.DependencyReservePercent > 0 {
+		matchLimit -= budget.LimitBytes * opts.DependencyReservePercent / 100
+	}
+	for _, c := range candidates {
+		if !packMatch(c, matchLimit) {
+			deferred = append(deferred, c)
+		}
 	}
 
 	// Pass 2: direct dependencies of the packed matches, best caller first.
@@ -503,6 +532,18 @@ func pack(
 			return nil, budget, stats, fmt.Errorf("extract: failed to load dependencies: %w", err)
 		}
 		maps.Copy(deps, more)
+	}
+
+	// Pass 1b: reserve the dependencies left unused goes back to the matches
+	// deferred in pass 1, in rank order, before any skeletons.
+	if matchLimit < budget.LimitBytes {
+		var still []fileCandidate
+		for _, c := range deferred {
+			if byPath[c.path] != nil || !packMatch(c, budget.LimitBytes) {
+				still = append(still, c)
+			}
+		}
+		deferred = still
 	}
 
 	// Pass 3: skeletons for matching files that did not fit as code.

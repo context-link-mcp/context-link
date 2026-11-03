@@ -4,6 +4,12 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ## [Unreleased]
 
+### Added
+- `extract --dependency-reserve` (default `25`): percent of the budget kept for the code of the matches' direct dependencies before lower-ranked matches are packed. What the dependencies leave unused goes back to the remaining matches, then skeletons. `0` restores the 1.3.0 packing. Library: `Options.DependencyReservePercent` (0 disables, clamped to 90).
+
+### Fixed
+- `extract` packed no dependency code on large repos: the matches filled the whole budget before the dependency pass ran. On paranoid (`--profile threat-model`, 50 KB) the default reserve packs 25 dependency symbols (was 0) and leaves 59 dependencies as references only (was 102); 41 matched symbols are packed instead of 46.
+
 ## [1.3.0] - 2026-11-03
 
 ### Changed
