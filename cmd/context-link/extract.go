@@ -54,6 +54,7 @@ var (
 	flagExtractWorkers  int
 	flagExtractRepoName string
 	flagExtractDepDepth int
+	flagExtractReserve  int
 )
 
 var extractCmd = &cobra.Command{
@@ -76,6 +77,8 @@ func registerExtractFlags() {
 	f.BoolVar(&flagExtractTests, "include-tests", false, "include tests, fixtures, vendored code and migrations")
 	f.IntVar(&flagExtractPerFile, "max-symbols-per-file", extract.DefaultMaxSymbolsPerFile, "maximum symbols returned per file")
 	f.IntVar(&flagExtractDepDepth, "dependency-depth", 1, "0: list direct dependencies as references only; 1: also pack their code")
+	f.IntVar(&flagExtractReserve, "dependency-reserve", extract.DefaultDependencyReservePercent,
+		"percent of the budget (0-90) kept for dependency code before lower-ranked matches; unused reserve goes back to matches")
 	f.StringVar(&flagExtractFormat, "format", "json", "output format (only json)")
 	f.BoolVar(&flagExtractNoIndex, "no-index", false, "skip the incremental index step and use the existing index")
 	f.IntVar(&flagExtractWorkers, "workers", 4, "parallel workers for the index step")
@@ -101,6 +104,9 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	}
 	if flagExtractDepDepth != 0 && flagExtractDepDepth != 1 {
 		return &exitError{exitUsage, fmt.Errorf("unsupported --dependency-depth %d (want 0 or 1)", flagExtractDepDepth)}
+	}
+	if flagExtractReserve < 0 || flagExtractReserve > extract.MaxDependencyReservePercent {
+		return &exitError{exitUsage, fmt.Errorf("unsupported --dependency-reserve %d (want 0-%d)", flagExtractReserve, extract.MaxDependencyReservePercent)}
 	}
 
 	cfg, err := config.Load(flagConfigFile)
@@ -168,6 +174,8 @@ func runExtract(cmd *cobra.Command, args []string) error {
 		IncludeTests:       flagExtractTests,
 		MaxSymbolsPerFile:  flagExtractPerFile,
 		SkipDependencyCode: flagExtractDepDepth == 0,
+
+		DependencyReservePercent: flagExtractReserve,
 	}, info)
 	if err != nil {
 		return &exitError{exitIndexUnusable, err}

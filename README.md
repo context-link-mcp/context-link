@@ -371,6 +371,7 @@ rm .context-link.db
 | **Output** | `--budget-bytes` | `50000` | Limit for the summed size of `files[].content` |
 |  | `--max-symbols-per-file` | `3` | Maximum ranked symbols per file (dependency code does not count) |
 |  | `--dependency-depth` | `1` | `1` packs the code of each match's direct dependencies within the budget; `0` lists them as references only |
+|  | `--dependency-reserve` | `25` | Percent of the budget (0-90) that matches cannot use until their dependencies' code is packed; unused reserve goes back to the remaining matches, then skeletons. `0` lets matches fill the whole budget first |
 |  | `--include-tests` | `false` | Include tests, fixtures, vendored code and migrations (excluded by default) |
 |  | `--format` | `json` | Output format (only `json`) |
 | **Execution** | `--no-index` | `false` | Skip the index step and use the existing index |

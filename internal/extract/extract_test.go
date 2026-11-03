@@ -371,6 +371,113 @@ func TestPackDependencyInOtherFileAndNoise(t *testing.T) {
 	assert.Contains(t, paths(files), "tests/helpers.py")
 }
 
+// fillerFunc returns a Python function of roughly n bytes that calls nothing.
+func fillerFunc(name string, n int) string {
+	var b strings.Builder
+	b.WriteString("def " + name + "():\n")
+	for b.Len() < n {
+		b.WriteString("    x = 1\n")
+	}
+	b.WriteString("    return x\n")
+	return b.String()
+}
+
+// candidates builds one pack candidate per name, ranked in the given order.
+func candidates(t *testing.T, db *store.DB, names ...string) ([]fileCandidate, map[int64]*scored) {
+	t.Helper()
+	var out []fileCandidate
+	scores := make(map[int64]*scored)
+	for i, n := range names {
+		s := symbol(t, db, n)
+		score := 1 / float64(i+1)
+		out = append(out, fileCandidate{path: s.FilePath, score: score, reason: "query: test", symbols: []models.Symbol{s}})
+		scores[s.ID] = &scored{score: score}
+	}
+	return out, scores
+}
+
+func tierOf(files []FileEntry, path string) string {
+	for _, f := range files {
+		if f.Path == path {
+			return f.Tier
+		}
+	}
+	return ""
+}
+
+func TestPackDependencyReserve(t *testing.T) {
+	t.Parallel()
+	db, _, _ := setupFiles(t, map[string]string{
+		"backend/alpha.py":   "def alpha(order):\n    return beta(order)\n",
+		"backend/beta.py":    fillerFunc("beta", 300),
+		"backend/filler1.py": fillerFunc("filler_one", 400),
+		"backend/filler2.py": fillerFunc("filler_two", 400),
+	})
+	ctx := context.Background()
+	size := func(name string) int { return len(symbol(t, db, name).CodeBlock) }
+	a, b, f1, f2 := size("alpha"), size("beta"), size("filler_one"), size("filler_two")
+	limit := a + f1 + f2 + 10
+	// Preconditions that make the reserve decide the outcome.
+	require.Greater(t, b, 10, "without a reserve beta must not fit after all matches")
+	require.LessOrEqual(t, a+f1, limit-limit*DefaultDependencyReservePercent/100)
+	require.Greater(t, a+f1+f2, limit-limit*DefaultDependencyReservePercent/100)
+	require.LessOrEqual(t, a+f1+b, limit)
+	require.Greater(t, a+f1+b+f2, limit)
+
+	cands, scores := candidates(t, db, "alpha", "filler_one", "filler_two")
+
+	t.Run("no reserve: matches crowd out the callee", func(t *testing.T) {
+		files, budget, stats, err := pack(ctx, db, Options{RepoName: "repo", BudgetBytes: limit}, cands, scores)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"backend/alpha.py", "backend/filler1.py", "backend/filler2.py"}, paths(files))
+		assert.Equal(t, 1, stats.droppedDeps)
+		assert.Equal(t, budget.UsedBytes, usedBytes(files))
+	})
+
+	t.Run("reserve: callee of the top match packed before a lower match", func(t *testing.T) {
+		opts := Options{RepoName: "repo", BudgetBytes: limit, DependencyReservePercent: DefaultDependencyReservePercent}
+		files, budget, stats, err := pack(ctx, db, opts, cands, scores)
+		require.NoError(t, err)
+		assert.Equal(t, "code", tierOf(files, "backend/alpha.py"))
+		assert.Equal(t, "code", tierOf(files, "backend/filler1.py"))
+		assert.Equal(t, RoleDependency, findRef(t, findFile(t, files, "backend/beta.py"), "beta").Role)
+		assert.Equal(t, "skeleton", tierOf(files, "backend/filler2.py"), "lower match falls back to a skeleton")
+		assert.Zero(t, stats.droppedDeps)
+		assert.LessOrEqual(t, budget.UsedBytes, limit)
+		assert.Equal(t, budget.UsedBytes, usedBytes(files))
+	})
+
+	t.Run("reserve ignored at dependency depth 0", func(t *testing.T) {
+		opts := Options{RepoName: "repo", BudgetBytes: limit, DependencyReservePercent: 50, SkipDependencyCode: true}
+		files, _, _, err := pack(ctx, db, opts, cands, scores)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"backend/alpha.py", "backend/filler1.py", "backend/filler2.py"}, paths(files))
+	})
+
+	t.Run("unused reserve goes back to matches", func(t *testing.T) {
+		fillers, fscores := candidates(t, db, "filler_one", "filler_two")
+		opts := Options{RepoName: "repo", BudgetBytes: f1 + f2, DependencyReservePercent: DefaultDependencyReservePercent}
+		files, budget, _, err := pack(ctx, db, opts, fillers, fscores)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"backend/filler1.py", "backend/filler2.py"}, paths(files))
+		assert.Equal(t, "code", tierOf(files, "backend/filler2.py"))
+		assert.Equal(t, f1+f2, budget.UsedBytes)
+	})
+}
+
+func TestRunClampsDependencyReserve(t *testing.T) {
+	t.Parallel()
+	db, embedder, info := setup(t)
+	for _, pct := range []int{-5, 0, 25, 90, 150} {
+		res, err := Run(context.Background(), db, embedder, nil, Options{
+			RepoName: "repo", Queries: []string{"login authentication"}, DependencyReservePercent: pct,
+		}, info)
+		require.NoError(t, err, pct)
+		assert.LessOrEqual(t, res.Budget.UsedBytes, res.Budget.LimitBytes, pct)
+		assert.NotEmpty(t, res.Files, pct)
+	}
+}
+
 func TestBuildContent(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
