@@ -4,6 +4,8 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-03
+
 ### Changed
 - **Breaking:** `extract` output is now `schema_version: 2`. `files[].symbols` is a list of objects instead of names: `name`, `qualified_name`, `kind`, `start_line`, `end_line`, `offset` (byte offset in `content`), `role` (`match`, `dependency` or `outline`) and `dependencies` (resolved direct callees with file and lines).
 
