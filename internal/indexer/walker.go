@@ -94,24 +94,9 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 		}
 
 		if d.IsDir() {
-			// Ignore rules apply to entries inside the root, never to the
-			// root itself (a repo checked out as "vendor" or a ".*" rule).
-			if path == w.repoRoot {
-				return nil
-			}
-
-			name := d.Name()
-			for _, pattern := range w.ignorePatterns {
-				if name == pattern {
-					return fs.SkipDir
-				}
-			}
-
-			relDir, _ := filepath.Rel(w.repoRoot, path)
-			if gitignore.match(filepath.ToSlash(relDir), true) {
+			if w.skipDir(path, gitignore) {
 				return fs.SkipDir
 			}
-
 			return nil
 		}
 
@@ -217,6 +202,53 @@ func (w *Walker) ToModelFiles(files []DiscoveredFile, repoName string) []models.
 		}
 	}
 	return result
+}
+
+// skipDir reports whether the walk skips the directory at the absolute path.
+// Ignore rules apply to entries inside the root, never to the root itself (a
+// repo checked out as "vendor" or a ".*" rule); paths outside the root are
+// always skipped.
+func (w *Walker) skipDir(path string, gitignore ignoreRules) bool {
+	if path == w.repoRoot {
+		return false
+	}
+	relDir, err := filepath.Rel(w.repoRoot, path)
+	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if relDir == "." {
+		return false
+	}
+	name := filepath.Base(path)
+	for _, pattern := range w.ignorePatterns {
+		if name == pattern {
+			return true
+		}
+	}
+	return gitignore.match(filepath.ToSlash(relDir), true)
+}
+
+// DirFilter reports which directories a walk of a repo skips: the default
+// ignore patterns (node_modules, vendor, .git, ...) and the root .gitignore.
+// The file watcher uses it so that it watches exactly the directories that
+// are indexed.
+type DirFilter struct {
+	walker    *Walker
+	gitignore ignoreRules
+}
+
+// NewDirFilter returns the DirFilter for the repo at repoRoot. The root
+// .gitignore is read once, here.
+func NewDirFilter(repoRoot string) *DirFilter {
+	w := NewWalker(nil, repoRoot)
+	return &DirFilter{walker: w, gitignore: w.loadGitignore()}
+}
+
+// Skip reports whether the directory at the absolute path dir is skipped by
+// the walker, either itself or because it lies outside the repo root. It
+// does not check dir's ancestors.
+func (f *DirFilter) Skip(dir string) bool {
+	return f.walker.skipDir(filepath.Clean(dir), f.gitignore)
 }
 
 // loadGitignore reads .gitignore from the repo root and returns its rules.
