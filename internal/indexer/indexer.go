@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -49,7 +50,16 @@ type fileResult struct {
 	routes  []ExtractedRoute
 }
 
+// ErrIndexerClosed is returned by IndexRepo after Drain.
+var ErrIndexerClosed = errors.New("indexer: closed")
+
 // Indexer orchestrates the full indexing pipeline: walk → parse → extract → store → embed.
+//
+// Index runs on one Indexer are serialised: IndexRepo waits for a run in
+// progress to finish before it starts. Everything that indexes a repo in one
+// process (serve's reindex_project tool and its --watch watcher) must share
+// one Indexer, because overlapping runs replace the same files' rows and race
+// on the Indexer's fields.
 type Indexer struct {
 	registry  *LanguageRegistry
 	pools     *ParserPoolManager
@@ -58,7 +68,13 @@ type Indexer struct {
 	embedder  vectorstore.Embedder // nil = skip embedding generation
 	workers   int
 	force     bool // when true, bypass incremental hash check
-	repoRoot  string
+
+	// run is a one-slot semaphore held for the duration of an index run: a
+	// channel rather than a sync.Mutex so that a waiting run honours its ctx.
+	run chan struct{}
+	// closed and repoRoot are only accessed while holding run.
+	closed   bool
+	repoRoot string
 }
 
 // NewIndexer creates a new Indexer with the given configuration.
@@ -74,6 +90,7 @@ func NewIndexer(registry *LanguageRegistry, db *store.DB, workers int, embedder 
 		db:        db,
 		embedder:  embedder,
 		workers:   workers,
+		run:       make(chan struct{}, 1),
 	}
 }
 
@@ -83,8 +100,44 @@ func (idx *Indexer) WithForce(force bool) *Indexer {
 	return idx
 }
 
-// IndexRepo indexes a repository at the given root path.
+// acquire waits until no other index run holds idx, or ctx ends.
+func (idx *Indexer) acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("indexer: indexing interrupted: %w", err)
+	}
+	select {
+	case idx.run <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("indexer: interrupted while waiting for the running index: %w", ctx.Err())
+	}
+	if idx.closed {
+		<-idx.run
+		return ErrIndexerClosed
+	}
+	return nil
+}
+
+// release ends the index run started by acquire.
+func (idx *Indexer) release() { <-idx.run }
+
+// Drain waits for the index run in progress, if any, and makes every later
+// IndexRepo call fail with ErrIndexerClosed. Call it before closing the
+// embedder or database the Indexer uses.
+func (idx *Indexer) Drain() {
+	idx.run <- struct{}{}
+	idx.closed = true
+	<-idx.run
+}
+
+// IndexRepo indexes a repository at the given root path. It first waits for
+// an index run already in progress on idx (see Indexer); if ctx ends while it
+// waits, it returns ctx's error without indexing.
 func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*IndexStats, error) {
+	if err := idx.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer idx.release()
+
 	start := time.Now()
 	stats := &IndexStats{}
 
