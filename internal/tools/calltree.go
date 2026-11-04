@@ -30,7 +30,8 @@ func RegisterCallTreeTool(s *server.MCPServer, db *store.DB, repoName string, ti
 			mcp.Description("'callees' (what it calls, default) or 'callers' (what calls it)."),
 		),
 		mcp.WithNumber("depth",
-			mcp.Description("Max traversal depth (default: 1, max: 3)."),
+			mcp.Description("Max traversal depth, 1 to 3 (default: 1; values above 3 are capped to 3). "+
+				"At most 100 edges are returned; 'truncated' is true when more were reachable."),
 		),
 	)
 	s.AddTool(tool, WithTimeout(timeout, callTreeHandler(db, repoName, tracker)))
@@ -63,22 +64,20 @@ func callTreeHandler(db *store.DB, repoName string, tracker *SessionTokenTracker
 		}
 
 		depth := req.GetInt("depth", 1)
-		if depth < 0 {
-			depth = 0
+		if depth < 1 {
+			return mcp.NewToolResultError("get_call_tree: 'depth' must be between 1 and 3"), nil
 		}
 		if depth > 3 {
 			depth = 3
 		}
 
-		sym, err := store.ResolveSymbol(ctx, db, repoName, symbolName)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"get_call_tree: symbol %q not found in repository %q. Try using semantic_search_symbols first.",
-				symbolName, repoName,
-			)), nil
+		res, msg := resolveSymbolArg(ctx, db, "get_call_tree", repoName, symbolName)
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
+		sym := res.Symbol
 
-		edges, err := store.GetCallTree(ctx, db, sym.ID, direction, depth)
+		edges, truncated, err := store.GetCallTree(ctx, db, repoName, sym.ID, direction, depth)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get_call_tree: traversal failed: %v", err)), nil
 		}
@@ -116,9 +115,11 @@ func callTreeHandler(db *store.DB, repoName string, tracker *SessionTokenTracker
 				"qualified_name": sym.QualifiedName,
 				"kind":           sym.Kind,
 				"file_path":      sym.FilePath,
+				"match_type":     matchType(res),
 			},
 			"edges":      edgeResults,
 			"edge_count": len(edgeResults),
+			"truncated":  truncated,
 			"direction":  direction,
 			"metadata": models.ToolMetadata{
 				TimingMs:           timingMs,

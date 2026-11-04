@@ -3,6 +3,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/context-link-mcp/context-link/internal/store"
@@ -52,64 +53,46 @@ func testDiscoveryHandler(
 
 		// Parse parameters.
 		symbolName, err := req.RequireString("symbol_name")
-		if err != nil {
-			return mcp.NewToolResultError("symbol_name is required and must be a non-empty string"), nil
+		if err != nil || strings.TrimSpace(symbolName) == "" {
+			return mcp.NewToolResultError("get_tests_for_symbol: 'symbol_name' parameter is required and must not be empty"), nil
 		}
 
 		includeCode := req.GetBool("include_code", false)
 
-		// Resolve the target symbol for response metadata.
-		targetSymbol, err := store.ResolveSymbol(ctx, db, repoName, symbolName)
-		if err != nil {
-			return mcp.NewToolResultError("symbol not found: " + symbolName), nil
+		res, msg := resolveSymbolArg(ctx, db, "get_tests_for_symbol", repoName, symbolName)
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
+		targetSymbol := res.Symbol
 
 		// Strategy 1: Dependency-based discovery (high confidence).
-		tests, err := store.GetTestsForSymbol(ctx, db, repoName, symbolName)
+		tests, truncated, err := store.GetTestsForSymbol(ctx, db, repoName, targetSymbol.ID)
 		if err != nil {
-			return mcp.NewToolResultError("failed to get tests for symbol: " + err.Error()), nil
+			return mcp.NewToolResultError("get_tests_for_symbol: failed to get tests for symbol: " + err.Error()), nil
+		}
+		matchReason := "calls_target"
+
+		// Strategy 2: Name heuristic fallback (if no dependency-based results).
+		if len(tests) == 0 {
+			tests, truncated, err = store.GetTestsByNameHeuristic(ctx, db, repoName, targetSymbol.Name)
+			if err != nil {
+				return mcp.NewToolResultError("get_tests_for_symbol: name heuristic failed: " + err.Error()), nil
+			}
+			matchReason = "name_match"
 		}
 
-		// Build result set with match_reason = "calls_target".
-		testResults := make(map[int64]testResult) // Use map to deduplicate
+		// The store returns tests ordered by file path and start line.
+		results := make([]testResult, 0, len(tests))
 		for _, test := range tests {
-			testResults[test.ID] = testResult{
+			results = append(results, testResult{
 				Name:          test.Name,
 				QualifiedName: test.QualifiedName,
 				FilePath:      test.FilePath,
 				StartLine:     test.StartLine,
 				EndLine:       test.EndLine,
-				MatchReason:   "calls_target",
+				MatchReason:   matchReason,
 				CodeBlock:     conditionalCodeBlock(test.CodeBlock, includeCode),
-			}
-		}
-
-		// Strategy 2: Name heuristic fallback (if no dependency-based results).
-		if len(testResults) == 0 {
-			heuristicTests, err := store.GetTestsByNameHeuristic(ctx, db, repoName, symbolName)
-			if err != nil {
-				// Non-fatal: proceed with empty results.
-				heuristicTests = nil
-			}
-			for _, test := range heuristicTests {
-				if _, exists := testResults[test.ID]; !exists {
-					testResults[test.ID] = testResult{
-						Name:          test.Name,
-						QualifiedName: test.QualifiedName,
-						FilePath:      test.FilePath,
-						StartLine:     test.StartLine,
-						EndLine:       test.EndLine,
-						MatchReason:   "name_match",
-						CodeBlock:     conditionalCodeBlock(test.CodeBlock, includeCode),
-					}
-				}
-			}
-		}
-
-		// Convert map to sorted slice.
-		var results []testResult
-		for _, tr := range testResults {
-			results = append(results, tr)
+			})
 		}
 
 		response := map[string]any{
@@ -118,9 +101,11 @@ func testDiscoveryHandler(
 				"qualified_name": targetSymbol.QualifiedName,
 				"kind":           targetSymbol.Kind,
 				"file_path":      targetSymbol.FilePath,
+				"match_type":     matchType(res),
 			},
 			"tests":      results,
 			"test_count": len(results),
+			"truncated":  truncated,
 			"metadata": models.ToolMetadata{
 				TimingMs: time.Since(start).Milliseconds(),
 			},

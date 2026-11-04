@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
@@ -101,94 +100,80 @@ func DeleteDependenciesByCallerFile(ctx context.Context, db *DB, repoName, fileP
 
 // GetCalleeNamesForSymbols returns a map of caller ID → []callee name for all given caller IDs.
 // Used during keyword enrichment to add function call names to embedding and FTS5 data.
-// Single batch query with IN clause for efficiency during bulk indexing.
+// Any number of IDs is accepted (a first index can hold far more symbols than
+// SQLite's 32,766 bind parameters); they are queried in chunks.
 func GetCalleeNamesForSymbols(ctx context.Context, db *DB, callerIDs []int64) (map[int64][]string, error) {
-	if len(callerIDs) == 0 {
-		return make(map[int64][]string), nil
-	}
-
-	// Build parameterized IN clause.
-	placeholders := make([]string, len(callerIDs))
-	args := make([]any, len(callerIDs))
-	for i, id := range callerIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(
-		`SELECT d.caller_id, s.name
-		 FROM dependencies d
-		 JOIN symbols s ON s.id = d.callee_id
-		 WHERE d.caller_id IN (%s)`,
-		strings.Join(placeholders, ","),
-	)
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get callee names for symbols: %w", err)
-	}
-	defer rows.Close()
-
-	// Group results by caller ID.
 	result := make(map[int64][]string)
-	for rows.Next() {
-		var callerID int64
-		var calleeName string
-		if err := rows.Scan(&callerID, &calleeName); err != nil {
-			return nil, fmt.Errorf("store: failed to scan callee name row: %w", err)
+	err := forEachIDChunk(callerIDs, 0, func(chunk []int64) error {
+		rows, err := db.QueryContext(ctx,
+			`SELECT d.caller_id, s.name
+			 FROM dependencies d
+			 JOIN symbols s ON s.id = d.callee_id
+			 WHERE d.caller_id IN (`+placeholders(len(chunk))+`)`,
+			idArgs(chunk)...,
+		)
+		if err != nil {
+			return fmt.Errorf("store: failed to get callee names for symbols: %w", err)
 		}
-		result[callerID] = append(result[callerID], calleeName)
-	}
+		defer rows.Close()
 
-	return result, rows.Err()
+		for rows.Next() {
+			var callerID int64
+			var calleeName string
+			if err := rows.Scan(&callerID, &calleeName); err != nil {
+				return fmt.Errorf("store: failed to scan callee name row: %w", err)
+			}
+			result[callerID] = append(result[callerID], calleeName)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // GetDirectDependencies returns caller ID → resolved direct callees for the
 // given callers, scoped to one repo. Callees are deduplicated per caller (an
 // edge may exist with several kinds), self-edges are skipped, and each list is
 // ordered by file path and start line. Callers without callees are absent.
+// Any number of callers is accepted; they are queried in chunks.
 func GetDirectDependencies(ctx context.Context, db *DB, repoName string, callerIDs []int64) (map[int64][]models.Symbol, error) {
 	result := make(map[int64][]models.Symbol)
-	if len(callerIDs) == 0 {
-		return result, nil
-	}
-
-	placeholders := make([]string, len(callerIDs))
-	args := make([]any, 0, len(callerIDs)+1)
-	for i, id := range callerIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	args = append(args, repoName)
-
-	query := fmt.Sprintf(
-		`SELECT DISTINCT d.caller_id, s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
-		        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
-		 FROM dependencies d
-		 JOIN symbols s ON s.id = d.callee_id
-		 WHERE d.caller_id IN (%s) AND s.repo_name = ? AND d.callee_id != d.caller_id
-		 ORDER BY d.caller_id, s.file_path, s.start_line, s.id`,
-		strings.Join(placeholders, ","),
-	)
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get direct dependencies: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var callerID int64
-		var s models.Symbol
-		if err := rows.Scan(
-			&callerID, &s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
-			&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
-		); err != nil {
-			return nil, fmt.Errorf("store: failed to scan direct dependency row: %w", err)
+	err := forEachIDChunk(callerIDs, 0, func(chunk []int64) error {
+		args := idArgs(chunk)
+		args = append(args, repoName)
+		rows, err := db.QueryContext(ctx,
+			`SELECT DISTINCT d.caller_id, s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+			        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+			 FROM dependencies d
+			 JOIN symbols s ON s.id = d.callee_id
+			 WHERE d.caller_id IN (`+placeholders(len(chunk))+`) AND s.repo_name = ? AND d.callee_id != d.caller_id
+			 ORDER BY d.caller_id, s.file_path, s.start_line, s.id`,
+			args...,
+		)
+		if err != nil {
+			return fmt.Errorf("store: failed to get direct dependencies: %w", err)
 		}
-		result[callerID] = append(result[callerID], s)
+		defer rows.Close()
+
+		for rows.Next() {
+			var callerID int64
+			var s models.Symbol
+			if err := rows.Scan(
+				&callerID, &s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+				&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+			); err != nil {
+				return fmt.Errorf("store: failed to scan direct dependency row: %w", err)
+			}
+			result[callerID] = append(result[callerID], s)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // scanDependencies scans multiple dependency rows.

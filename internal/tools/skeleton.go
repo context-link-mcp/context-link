@@ -86,18 +86,23 @@ func fileSkeletonHandlerBatch(db *store.DB, repoName, projectRoot string, tracke
 		fileSet := map[string]struct{}{}
 		totalResponseBytes := 0
 
-		for _, filePath := range filePaths {
-			filePath = strings.TrimSpace(filePath)
-			if filePath == "" {
-				results = append(results, newBatchError(filePath, "file_path is empty"))
+		for _, input := range filePaths {
+			input = strings.TrimSpace(input)
+			if input == "" {
+				results = append(results, newBatchError(input, "file_path is empty"))
+				continue
+			}
+			filePath, err := cleanRepoPath(projectRoot, input)
+			if err != nil {
+				results = append(results, newBatchError(input, fmt.Sprintf("invalid file_path %q: %v", input, err)))
 				continue
 			}
 
 			// Check if file exists on disk.
 			if projectRoot != "" {
-				absPath := filepath.Join(projectRoot, filePath)
+				absPath := filepath.Join(projectRoot, filepath.FromSlash(filePath))
 				if _, err := os.Stat(absPath); os.IsNotExist(err) {
-					results = append(results, newBatchError(filePath, fmt.Sprintf(
+					results = append(results, newBatchError(input, fmt.Sprintf(
 						"file does not exist: %s", filePath,
 					)))
 					continue
@@ -107,14 +112,14 @@ func fileSkeletonHandlerBatch(db *store.DB, repoName, projectRoot string, tracke
 			// Get symbols for this file.
 			symbols, err := store.GetSymbolsByFile(ctx, db, repoName, filePath)
 			if err != nil {
-				results = append(results, newBatchError(filePath, fmt.Sprintf(
+				results = append(results, newBatchError(input, fmt.Sprintf(
 					"failed to get symbols: %v", err,
 				)))
 				continue
 			}
 
 			if len(symbols) == 0 {
-				results = append(results, newBatchError(filePath, fmt.Sprintf(
+				results = append(results, newBatchError(input, fmt.Sprintf(
 					"no symbols found for %q. Check that the file is indexed.", filePath,
 				)))
 				continue
@@ -143,7 +148,7 @@ func fileSkeletonHandlerBatch(db *store.DB, repoName, projectRoot string, tracke
 			fileSet[filePath] = struct{}{}
 			totalResponseBytes += responseBytes
 
-			results = append(results, newBatchSuccess(filePath, map[string]any{
+			results = append(results, newBatchSuccess(input, map[string]any{
 				"file_path":    filePath,
 				"language":     language,
 				"symbols":      entries,

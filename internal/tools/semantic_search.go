@@ -59,7 +59,7 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 			mcp.Description("Natural-language description of what you are looking for. Example: 'user authentication', 'database connection pool'."),
 		),
 		mcp.WithNumber("top_k",
-			mcp.Description("Maximum number of results to return (default: 10, max: 50)."),
+			mcp.Description("Maximum number of results to return: a positive number (default: 10; values above 50 are capped to 50)."),
 		),
 		mcp.WithString("kind",
 			mcp.Description("Filter by symbol kind: 'function', 'class', 'interface', 'type', 'variable'. Leave empty for all kinds."),
@@ -252,8 +252,11 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		}
 
 		topK := req.GetInt("top_k", 10)
-		if topK <= 0 || topK > 50 {
-			topK = 10
+		if topK <= 0 {
+			return mcp.NewToolResultError("semantic_search_symbols: 'top_k' must be a positive number (default 10, max 50)"), nil
+		}
+		if topK > 50 {
+			topK = 50
 		}
 
 		minSimilarity := float32(req.GetFloat("min_similarity", 0.3))
@@ -262,7 +265,7 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		}
 
 		kindFilter := strings.TrimSpace(req.GetString("kind", ""))
-		pathPrefix := strings.TrimSpace(req.GetString("file_path_prefix", ""))
+		pathPrefix := cleanPathPrefix(req.GetString("file_path_prefix", ""))
 
 		// --- Embedder availability check ---
 		if embedder == nil {
@@ -329,7 +332,7 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		}
 		memoryCounts, _ := store.CountMemoriesBySymbolIDs(ctx, db, symbolIDs)
 
-		var results []SemanticSearchResult
+		results := []SemanticSearchResult{}
 		fileSet := map[string]struct{}{}
 		for _, c := range candidates {
 			r := c.result

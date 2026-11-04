@@ -41,10 +41,10 @@ func TestReindex_NoChanges(t *testing.T) {
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		FilesChanged    int `json:"files_changed"`
-		FilesScanned    int `json:"files_scanned"`
-		SymbolsAdded    int `json:"symbols_added"`
-		SymbolsRemoved  int `json:"symbols_removed"`
+		FilesChanged   int `json:"files_changed"`
+		FilesScanned   int `json:"files_scanned"`
+		SymbolsAdded   int `json:"symbols_added"`
+		SymbolsRemoved int `json:"symbols_removed"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -121,13 +121,43 @@ func main() {}`), 0644))
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		FilesDeleted int `json:"files_deleted"`
+		FilesDeleted   int `json:"files_deleted"`
+		FilesSkipped   int `json:"files_skipped"`
+		SymbolsRemoved int `json:"symbols_removed"`
+		SymbolsTotal   int `json:"symbols_total"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
 	require.NoError(t, json.Unmarshal([]byte(raw.Text), &resp))
 
 	assert.Greater(t, resp.FilesDeleted, 0, "deleted file should be detected")
+	// Regression: symbols_removed was hardcoded to 0.
+	assert.Equal(t, 1, resp.SymbolsRemoved, "main() of the deleted file was removed")
+	assert.Equal(t, 0, resp.SymbolsTotal)
+	assert.Equal(t, 0, resp.FilesSkipped)
+}
+
+// TestIndexStats_SymbolsRemovedOnModify: re-indexing a changed file counts
+// its previous symbols as removed (their replacements as extracted).
+func TestIndexStats_SymbolsRemovedOnModify(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	idx := buildTestIndexer(t, db)
+	root := t.TempDir()
+	ctx := context.Background()
+
+	src := filepath.Join(root, "a.go")
+	require.NoError(t, os.WriteFile(src, []byte("package p\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n"), 0o644))
+	_, err := idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(src, []byte("package p\n\nfunc A() {}\n"), 0o644))
+	stats, err := idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.SymbolsExtracted)
+	assert.Equal(t, 3, stats.SymbolsRemoved, "A, B and C were deleted; A was re-inserted")
+	assert.Equal(t, 1, stats.SymbolsTotal)
+	assert.Equal(t, 0, stats.FilesSkipped)
 }
 
 func TestReindex_ModifiedFiles(t *testing.T) {
@@ -158,8 +188,8 @@ func newFunc() {}`), 0644))
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		FilesChanged    int `json:"files_changed"`
-		SymbolsUpdated  int `json:"symbols_updated"`
+		FilesChanged   int `json:"files_changed"`
+		SymbolsUpdated int `json:"symbols_updated"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
@@ -196,7 +226,7 @@ func callee() {}
 	assert.False(t, result.IsError)
 
 	var resp struct {
-		DependenciesUpdated int  `json:"dependencies_updated"`
+		DependenciesUpdated int `json:"dependencies_updated"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)

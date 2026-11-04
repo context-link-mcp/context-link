@@ -27,7 +27,8 @@ func RegisterBlastRadiusTool(s *server.MCPServer, db *store.DB, repoName string,
 			mcp.Description("The name or qualified name of the symbol to analyze."),
 		),
 		mcp.WithNumber("depth",
-			mcp.Description("Max traversal depth for callers (default: 2, max: 3)."),
+			mcp.Description("Max traversal depth for callers (default: 2, max: 3). "+
+				"At most 100 affected symbols are returned; 'truncated' is true when more were reachable."),
 		),
 	)
 	s.AddTool(tool, WithTimeout(timeout, blastRadiusHandler(db, repoName, tracker)))
@@ -60,16 +61,14 @@ func blastRadiusHandler(db *store.DB, repoName string, tracker *SessionTokenTrac
 			depth = 3
 		}
 
-		sym, err := store.ResolveSymbol(ctx, db, repoName, symbolName)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"get_blast_radius: symbol %q not found in repository %q. Try using semantic_search_symbols first.",
-				symbolName, repoName,
-			)), nil
+		res, msg := resolveSymbolArg(ctx, db, "get_blast_radius", repoName, symbolName)
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
+		sym := res.Symbol
 
 		// BFS through callers using the existing call tree infrastructure.
-		edges, err := store.GetCallTree(ctx, db, sym.ID, "callers", depth)
+		edges, truncated, err := store.GetCallTree(ctx, db, repoName, sym.ID, "callers", depth)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get_blast_radius: traversal failed: %v", err)), nil
 		}
@@ -110,11 +109,13 @@ func blastRadiusHandler(db *store.DB, repoName string, tracker *SessionTokenTrac
 				"qualified_name": sym.QualifiedName,
 				"kind":           sym.Kind,
 				"file_path":      sym.FilePath,
+				"match_type":     matchType(res),
 			},
-			"affected_files":  affectedByFile,
-			"total_affected":  len(edges),
-			"files_affected":  len(affectedByFile),
-			"by_depth":        byDepth,
+			"affected_files": affectedByFile,
+			"total_affected": len(edges),
+			"files_affected": len(affectedByFile),
+			"by_depth":       byDepth,
+			"truncated":      truncated,
 			"metadata": models.ToolMetadata{
 				TimingMs:           timingMs,
 				TokensSavedEst:     savings.Saved,

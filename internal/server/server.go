@@ -116,7 +116,9 @@ func (s *Server) registerTools() {
 		{"get_blast_radius", func() { tools.RegisterBlastRadiusTool(s.mcp, s.db, repoName, timeout, tracker) }},
 		{"find_http_routes", func() { tools.RegisterRoutesTool(s.mcp, s.db, repoName, s.cfg.ProjectRoot, timeout, tracker) }},
 		{"search_code_patterns", func() { tools.RegisterSearchCodePatternsTool(s.mcp, s.db, repoName, timeout, tracker) }},
-		{"memory", func() { tools.RegisterMemoryTools(s.mcp, s.db, repoName, timeout) }},
+		{"save_symbol_memory", func() { tools.RegisterSaveMemoryTool(s.mcp, s.db, repoName, timeout) }},
+		{"get_symbol_memories", func() { tools.RegisterGetMemoriesTool(s.mcp, s.db, repoName, timeout) }},
+		{"purge_stale_memories", func() { tools.RegisterPurgeMemoriesTool(s.mcp, s.db, repoName, timeout) }},
 	}
 
 	enabled := s.cfg.Tools
@@ -130,9 +132,14 @@ func (s *Server) registerTools() {
 	}
 }
 
+// memoryToolGroup is the config name that enables all three memory tools.
+const memoryToolGroup = "memory"
+
 // isToolEnabled returns true if the tool should be registered.
-// If the enabled list is empty, all tools are enabled.
-// The memory group matches "memory", "save_symbol_memory", "get_symbol_memories", or "purge_stale_memories".
+// If the enabled list is empty, all tools are enabled. Each tool is enabled
+// by its own name; the "memory" group name enables save_symbol_memory,
+// get_symbol_memories and purge_stale_memories together. Naming one memory
+// tool never enables the others (in particular not the destructive purge).
 func isToolEnabled(name string, enabled []string) bool {
 	if len(enabled) == 0 {
 		return true
@@ -141,12 +148,16 @@ func isToolEnabled(name string, enabled []string) bool {
 		if e == name {
 			return true
 		}
-		// Allow enabling memory group by any individual tool name.
-		if name == "memory" && (e == "save_symbol_memory" || e == "get_symbol_memories" || e == "purge_stale_memories") {
+		if e == memoryToolGroup && isMemoryTool(name) {
 			return true
 		}
 	}
 	return false
+}
+
+// isMemoryTool reports whether name is one of the memory tools.
+func isMemoryTool(name string) bool {
+	return name == "save_symbol_memory" || name == "get_symbol_memories" || name == "purge_stale_memories"
 }
 
 // registerPrompts registers the explore_codebase prompt that instructs the

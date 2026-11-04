@@ -104,8 +104,9 @@ func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter
 		args = append(args, strings.ToUpper(filter.Method))
 	}
 	if filter.Path != "" {
-		conditions = append(conditions, "(path_pattern LIKE ? OR normalized_path LIKE ?)")
-		p := "%" + filter.Path + "%"
+		// Substring match; LIKE wildcards in the filter match literally.
+		conditions = append(conditions, `(path_pattern LIKE ? ESCAPE '\' OR normalized_path LIKE ? ESCAPE '\')`)
+		p := "%" + EscapeLike(filter.Path) + "%"
 		args = append(args, p, p)
 	}
 	if filter.FilePath != "" {

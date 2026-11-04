@@ -87,17 +87,26 @@ func getCodeBySymbolHandlerBatch(db *store.DB, repoName string, tracker *Session
 		totalResponseBytes := 0
 
 		for _, symbolName := range symbolNames {
-			// Look up the symbol.
-			sym, deps, err := store.GetSymbolWithDependencies(ctx, db, repoName, symbolName, depth)
+			// Look up the symbol: exact name or qualified name, else a unique
+			// substring match (reported as match_type "fuzzy").
+			res, msg := resolveSymbolArg(ctx, db, "", repoName, symbolName)
+			if msg != "" {
+				item := newBatchError(symbolName, msg)
+				item.Candidates = candidateNames(res)
+				results = append(results, item)
+				continue
+			}
+			sym := res.Symbol
+			deps, err := store.GetTransitiveDependencies(ctx, db, sym.ID, depth)
 			if err != nil {
 				results = append(results, newBatchError(symbolName, fmt.Sprintf(
-					"symbol %q not found in repository %q", symbolName, repoName,
+					"failed to load dependencies of %q: %v", symbolName, err,
 				)))
 				continue
 			}
 
 			// Build dependency list.
-			var depResults []map[string]any
+			depResults := make([]map[string]any, 0, len(deps))
 			for _, d := range deps {
 				depResults = append(depResults, map[string]any{
 					"name":           d.Name,
@@ -110,8 +119,14 @@ func getCodeBySymbolHandlerBatch(db *store.DB, repoName string, tracker *Session
 				})
 			}
 
-			// Fetch associated memories (non-fatal if unavailable).
-			memories, _ := store.GetMemoriesBySymbolID(ctx, db, sym.ID)
+			// Fetch associated memories.
+			memories, err := store.GetMemoriesBySymbolID(ctx, db, sym.ID)
+			if err != nil {
+				results = append(results, newBatchError(symbolName, fmt.Sprintf(
+					"failed to load memories of %q: %v", symbolName, err,
+				)))
+				continue
+			}
 			type memResult struct {
 				ID          int64  `json:"id"`
 				Note        string `json:"note"`
@@ -157,6 +172,7 @@ func getCodeBySymbolHandlerBatch(db *store.DB, repoName string, tracker *Session
 					"language":       sym.Language,
 					"content_hash":   sym.ContentHash,
 				},
+				"match_type":       matchType(res),
 				"dependencies":     depResults,
 				"dependency_count": len(depResults),
 				"memories":         memResults,

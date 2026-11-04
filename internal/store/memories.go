@@ -71,24 +71,31 @@ func GetMemoriesBySymbolID(ctx context.Context, db *DB, symbolID int64) ([]model
 	return scanMemories(rows)
 }
 
-// GetMemoriesBySymbolName returns memories for any symbol matching the name (exact or fuzzy).
-// Results include stale memories with IsStale set, and orphaned memories of
-// this repo whose last known symbol matches. Supports pagination.
+// GetMemoriesBySymbolName returns memories of symbols of repoName whose name
+// or qualified name equals symbolName exactly (no substring or wildcard
+// matching), and orphaned memories of this repo whose last known symbol is
+// symbolName or ends in "."+symbolName. Results include stale memories with
+// IsStale set, newest first, and support pagination. A blank name returns no
+// memories.
 func GetMemoriesBySymbolName(ctx context.Context, db *DB, repoName, symbolName string, offset, limit int) ([]models.Memory, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	if strings.TrimSpace(symbolName) == "" {
+		return []models.Memory{}, nil
 	}
 	rows, err := db.QueryContext(ctx,
 		`SELECT m.id, m.symbol_id, m.repo_name, m.note, m.author, m.is_stale, m.stale_reason,
 		        m.last_known_symbol, m.last_known_file, m.created_at, m.updated_at
 		 FROM memories m
 		 LEFT JOIN symbols s ON s.id = m.symbol_id
-		 WHERE (s.repo_name = ? AND (s.name LIKE ? OR s.qualified_name LIKE ?))
-		    OR (s.id IS NULL AND m.repo_name = ? AND m.last_known_symbol LIKE ?)
-		 ORDER BY m.created_at DESC
+		 WHERE (s.repo_name = ? AND (s.name = ? OR s.qualified_name = ?))
+		    OR (s.id IS NULL AND m.repo_name = ? AND
+		        (m.last_known_symbol = ? OR substr(m.last_known_symbol, -(length(?) + 1)) = '.' || ?))
+		 ORDER BY m.created_at DESC, m.id DESC
 		 LIMIT ? OFFSET ?`,
-		repoName, "%"+symbolName+"%", "%"+symbolName+"%",
-		repoName, "%"+symbolName+"%", limit, offset,
+		repoName, symbolName, symbolName,
+		repoName, symbolName, symbolName, symbolName, limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to get memories for symbol name %q: %w", symbolName, err)
@@ -239,39 +246,35 @@ func CountMemoriesBySymbolID(ctx context.Context, db *DB, symbolID int64) (int, 
 	return count, nil
 }
 
-// CountMemoriesBySymbolIDs returns memory counts keyed by symbol ID for a batch.
+// CountMemoriesBySymbolIDs returns memory counts keyed by symbol ID for a
+// batch. Symbols without memories are absent. Any number of IDs is accepted;
+// they are queried in chunks.
 func CountMemoriesBySymbolIDs(ctx context.Context, db *DB, symbolIDs []int64) (map[int64]int, error) {
-	if len(symbolIDs) == 0 {
-		return map[int64]int{}, nil
-	}
-
-	placeholders := strings.Repeat("?,", len(symbolIDs))
-	placeholders = placeholders[:len(placeholders)-1]
-
-	args := make([]any, len(symbolIDs))
-	for i, id := range symbolIDs {
-		args[i] = id
-	}
-
-	rows, err := db.QueryContext(ctx,
-		`SELECT symbol_id, COUNT(*) FROM memories WHERE symbol_id IN (`+placeholders+`) GROUP BY symbol_id`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to count memories by symbol IDs: %w", err)
-	}
-	defer rows.Close()
-
 	counts := make(map[int64]int, len(symbolIDs))
-	for rows.Next() {
-		var id int64
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
-			return nil, fmt.Errorf("store: failed to scan memory count row: %w", err)
+	err := forEachIDChunk(symbolIDs, 0, func(chunk []int64) error {
+		rows, err := db.QueryContext(ctx,
+			`SELECT symbol_id, COUNT(*) FROM memories WHERE symbol_id IN (`+placeholders(len(chunk))+`) GROUP BY symbol_id`,
+			idArgs(chunk)...,
+		)
+		if err != nil {
+			return fmt.Errorf("store: failed to count memories by symbol IDs: %w", err)
 		}
-		counts[id] = count
+		defer rows.Close()
+
+		for rows.Next() {
+			var id int64
+			var count int
+			if err := rows.Scan(&id, &count); err != nil {
+				return fmt.Errorf("store: failed to scan memory count row: %w", err)
+			}
+			counts[id] = count
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return counts, rows.Err()
+	return counts, nil
 }
 
 // PurgeStaleMemories deletes stale memories of repoName. If orphanedOnly is

@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/context-link-mcp/context-link/pkg/models"
@@ -34,6 +38,11 @@ func RegisterSearchCodePatternsTool(
 				"module docstrings, configuration dictionaries, or import statements. For file-level "+
 				"patterns, read the file directly using the Read tool."+
 				"\n\n"+
+				"Results are ordered by file path and start line. 'truncated' is true when more "+
+				"symbols match than 'limit' (truncated_reason 'limit') or when the scan stopped after "+
+				"50,000 candidate symbols (truncated_reason 'scan_cap'); narrow the pattern or use "+
+				"file_path_prefix/kind in that case."+
+				"\n\n"+
 				"Example: pattern='errors\\\\.New\\\\(\".*\"\\\\)' finds error sentinel definitions.",
 		),
 		mcp.WithString("pattern",
@@ -47,7 +56,7 @@ func RegisterSearchCodePatternsTool(
 			mcp.Description("Optional: filter by symbol kind ('function', 'class', 'interface', 'type', 'variable', 'method')."),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum results to return (default: 50, max: 200)."),
+			mcp.Description("Maximum results to return: a positive number (default: 50; values above 200 are capped to 200)."),
 		),
 	)
 	s.AddTool(tool, WithTimeout(timeout, searchCodePatternsHandler(db, repoName, tracker)))
@@ -64,6 +73,14 @@ type patternMatchResult struct {
 	MatchSnippet  string `json:"match_snippet"`
 	MatchIndices  []int  `json:"match_indices"` // [start, end] positions in code_block
 }
+
+// Scan bounds for search_code_patterns: candidates are read in pages and
+// matched in Go; the scan stops after maxPatternScan candidates so a broad
+// pattern over a huge repo stays within the tool timeout.
+const (
+	patternPageSize = 500
+	maxPatternScan  = 50000
+)
 
 // searchCodePatternsHandler returns the MCP tool handler for search_code_patterns.
 func searchCodePatternsHandler(
@@ -88,59 +105,61 @@ func searchCodePatternsHandler(
 			)), nil
 		}
 
-		filePathPrefix := strings.TrimSpace(req.GetString("file_path_prefix", ""))
-		kindFilter := strings.TrimSpace(req.GetString("kind", ""))
 		limit := req.GetInt("limit", 50)
-
-		// For LIKE prefiltering, extract a literal substring from the pattern if possible.
-		// Simple heuristic: if pattern contains no regex metacharacters, use it directly.
-		likePattern := extractLiteralSubstring(pattern)
-
-		// Query database for candidate symbols.
-		// Fetch 2x limit to account for regex filtering false positives from LIKE.
-		symbols, err := store.SearchCodePatterns(ctx, db, repoName, likePattern, filePathPrefix, kindFilter, limit*2)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"search_code_patterns: search failed: %v", err,
-			)), nil
+		if limit <= 0 {
+			return mcp.NewToolResultError("search_code_patterns: 'limit' must be a positive number (default 50, max 200)"), nil
+		}
+		if limit > 200 {
+			limit = 200
 		}
 
-		// Apply regex filtering on Go side.
-		var results []patternMatchResult
+		// The SQL prefilter only uses substrings every match must contain,
+		// so it never drops a real match; the regex decides.
+		filter := store.CodePatternFilter{
+			Literals:       requiredLiterals(pattern),
+			FilePathPrefix: cleanPathPrefix(req.GetString("file_path_prefix", "")),
+			Kind:           strings.TrimSpace(req.GetString("kind", "")),
+		}
+
+		// Page through the candidates in a stable order, applying the regex
+		// before the limit.
+		results := []patternMatchResult{}
 		fileSet := map[string]struct{}{}
-		for _, sym := range symbols {
-			if len(results) >= limit {
+		truncatedReason := ""
+		scanned := 0
+		var cursor *store.SymbolCursor
+	scan:
+		for {
+			if err := ctx.Err(); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("search_code_patterns: search interrupted: %v", err)), nil
+			}
+			page, err := store.SearchCodePatterns(ctx, db, repoName, filter, cursor, patternPageSize)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf(
+					"search_code_patterns: search failed: %v", err,
+				)), nil
+			}
+			for _, sym := range page {
+				scanned++
+				matches := regex.FindStringIndex(sym.CodeBlock)
+				if matches == nil {
+					continue
+				}
+				if len(results) == limit {
+					truncatedReason = "limit"
+					break scan
+				}
+				results = append(results, newPatternMatch(sym, matches))
+				fileSet[sym.FilePath] = struct{}{}
+			}
+			if len(page) < patternPageSize {
 				break
 			}
-
-			matches := regex.FindStringIndex(sym.CodeBlock)
-			if matches == nil {
-				continue
+			if scanned >= maxPatternScan {
+				truncatedReason = "scan_cap"
+				break
 			}
-
-			// Extract snippet (50 chars context around match).
-			matchStart := matches[0]
-			matchEnd := matches[1]
-			snippetStart := maxInt(0, matchStart-25)
-			snippetEnd := minInt(len(sym.CodeBlock), matchEnd+25)
-			snippet := sym.CodeBlock[snippetStart:snippetEnd]
-
-			// Truncate snippet if it's still too long for display.
-			if len(snippet) > 200 {
-				snippet = snippet[:200] + "..."
-			}
-
-			results = append(results, patternMatchResult{
-				SymbolName:    sym.Name,
-				QualifiedName: sym.QualifiedName,
-				Kind:          sym.Kind,
-				FilePath:      sym.FilePath,
-				StartLine:     sym.StartLine,
-				EndLine:       sym.EndLine,
-				MatchSnippet:  snippet,
-				MatchIndices:  []int{matchStart, matchEnd},
-			})
-			fileSet[sym.FilePath] = struct{}{}
+			cursor = store.CursorAfter(page[len(page)-1])
 		}
 
 		// Token savings: agent would read all matched files; we return snippets only.
@@ -157,9 +176,11 @@ func searchCodePatternsHandler(
 		timingMs := time.Since(start).Milliseconds()
 
 		resp := map[string]any{
-			"results":      results,
-			"result_count": len(results),
-			"pattern":      pattern,
+			"results":         results,
+			"result_count":    len(results),
+			"pattern":         pattern,
+			"truncated":       truncatedReason != "",
+			"symbols_scanned": scanned,
 			"metadata": models.ToolMetadata{
 				TimingMs:           timingMs,
 				TokensSavedEst:     savings.Saved,
@@ -168,54 +189,149 @@ func searchCodePatternsHandler(
 				SessionCostAvoided: FormatCost(sessionTotal),
 			},
 		}
+		if truncatedReason != "" {
+			resp["truncated_reason"] = truncatedReason
+		}
 
 		return mcp.NewToolResultJSON(resp)
 	}
 }
 
-// extractLiteralSubstring extracts a literal substring from a regex pattern
-// for SQL LIKE prefiltering. Returns the pattern stripped of common regex anchors.
-// This is a simple heuristic to improve query efficiency.
-func extractLiteralSubstring(pattern string) string {
-	// Simple heuristic: remove ^ and $ anchors, backslash escapes.
-	s := strings.TrimPrefix(pattern, "^")
-	s = strings.TrimSuffix(s, "$")
+// newPatternMatch builds the result entry for a symbol whose code block
+// matched at matches[0]:matches[1], with about 25 bytes of context each side.
+func newPatternMatch(sym models.Symbol, matches []int) patternMatchResult {
+	matchStart, matchEnd := matches[0], matches[1]
+	snippetStart := maxInt(0, matchStart-25)
+	snippetEnd := minInt(len(sym.CodeBlock), matchEnd+25)
+	snippet := sym.CodeBlock[snippetStart:snippetEnd]
 
-	// If pattern has no regex metacharacters, use it directly.
-	if !strings.ContainsAny(s, ".*+?[]{}()|\\") {
-		return s
+	// Truncate snippet if it's still too long for display.
+	if len(snippet) > 200 {
+		snippet = snippet[:200] + "..."
 	}
 
-	// Otherwise, extract first contiguous alphanumeric sequence.
-	// Walk through the string and find the first run of word characters.
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		// Skip backslash escape sequences (e.g., \b, \., \\)
-		if c == '\\' && i+1 < len(s) {
-			i++ // Skip the escaped character
+	return patternMatchResult{
+		SymbolName:    sym.Name,
+		QualifiedName: sym.QualifiedName,
+		Kind:          sym.Kind,
+		FilePath:      sym.FilePath,
+		StartLine:     sym.StartLine,
+		EndLine:       sym.EndLine,
+		MatchSnippet:  snippet,
+		MatchIndices:  []int{matchStart, matchEnd},
+	}
+}
+
+// maxPrefilterLiterals caps the LIKE conditions of the SQL prefilter.
+const maxPrefilterLiterals = 3
+
+// requiredLiterals returns substrings that every match of pattern must
+// contain, longest first (at most maxPrefilterLiterals, each at least 2
+// bytes), for the SQL LIKE prefilter of search_code_patterns. It is
+// conservative: alternations, optional or repeated-zero parts, character
+// classes and anything else it cannot prove required contribute nothing, so
+// the prefilter never excludes a symbol the regex would match. SQLite's LIKE
+// is ASCII case-insensitive, which only widens the prefilter; case-folded
+// literals are kept only when ASCII folding covers every fold (no non-ASCII
+// runes, no k or s, whose folds include U+212A and U+017F).
+func requiredLiterals(pattern string) []string {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	info := analyzeLiterals(re.Simplify())
+
+	seen := map[string]bool{}
+	var lits []string
+	for _, l := range info.required {
+		if len(l) < 2 || seen[l] {
 			continue
 		}
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
-			start := i
-			// Find the end of this word sequence.
-			for i < len(s) {
-				c := s[i]
-				if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					break
-				}
-				i++
+		seen[l] = true
+		lits = append(lits, l)
+	}
+	sort.SliceStable(lits, func(i, j int) bool { return len(lits[i]) > len(lits[j]) })
+	if len(lits) > maxPrefilterLiterals {
+		lits = lits[:maxPrefilterLiterals]
+	}
+	return lits
+}
+
+// literalInfo describes what a regex node guarantees about its matches.
+type literalInfo struct {
+	exact    string   // the only string the node matches, when isExact
+	isExact  bool     // the node matches exactly one string (possibly empty)
+	required []string // substrings every match of the node contains
+}
+
+// analyzeLiterals computes the literalInfo of a parsed, simplified regex.
+func analyzeLiterals(re *syntax.Regexp) literalInfo {
+	switch re.Op {
+	case syntax.OpLiteral:
+		s := string(re.Rune)
+		if re.Flags&syntax.FoldCase != 0 {
+			if asciiFoldSafe(s) {
+				return literalInfo{required: []string{s}}
 			}
-			// Return the first word sequence that's at least 3 characters long.
-			word := s[start:i]
-			if len(word) >= 3 {
-				return word
+			return literalInfo{}
+		}
+		return literalInfo{exact: s, isExact: true, required: []string{s}}
+	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
+		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		// Zero-width: matches only the empty string at this position.
+		return literalInfo{isExact: true}
+	case syntax.OpCapture:
+		return analyzeLiterals(re.Sub[0])
+	case syntax.OpPlus:
+		return literalInfo{required: analyzeLiterals(re.Sub[0]).required}
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return literalInfo{required: analyzeLiterals(re.Sub[0]).required}
+		}
+		return literalInfo{}
+	case syntax.OpConcat:
+		var info literalInfo
+		var run, whole strings.Builder
+		allExact := true
+		flush := func() {
+			if run.Len() > 0 {
+				info.required = append(info.required, run.String())
+				run.Reset()
 			}
 		}
+		for _, sub := range re.Sub {
+			si := analyzeLiterals(sub)
+			info.required = append(info.required, si.required...)
+			if si.isExact {
+				run.WriteString(si.exact)
+				whole.WriteString(si.exact)
+				continue
+			}
+			allExact = false
+			flush()
+		}
+		flush()
+		if allExact {
+			info.isExact = true
+			info.exact = whole.String()
+		}
+		return info
+	default:
+		// Alternation, star, quest, classes, any-char: nothing is required.
+		return literalInfo{}
 	}
+}
 
-	// Fallback: no suitable literal substring found, return empty.
-	// The SQL query will still work but won't benefit from LIKE prefiltering.
-	return ""
+// asciiFoldSafe reports whether SQLite's ASCII-only case-insensitive LIKE
+// matches every case fold of s: s is ASCII and has no k/K or s/S (which fold
+// to the Kelvin sign and long s).
+func asciiFoldSafe(s string) bool {
+	for _, r := range s {
+		if r >= utf8.RuneSelf || unicode.ToLower(r) == 'k' || unicode.ToLower(r) == 's' {
+			return false
+		}
+	}
+	return true
 }
 
 // minInt returns the smaller of two integers.

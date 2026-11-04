@@ -67,8 +67,10 @@ func reindexHandler(
 			"files_deleted":        stats.FilesDeleted,
 			"files_unchanged":      stats.FilesUnchanged,
 			"symbols_added":        stats.SymbolsExtracted,
-			"symbols_removed":      0, // Symbols are deleted as part of file deletion
+			"symbols_removed":      stats.SymbolsRemoved,   // Old symbols of re-indexed and deleted files
 			"symbols_updated":      stats.SymbolsExtracted, // Incremental re-parse = symbols updated
+			"symbols_total":        stats.SymbolsTotal,
+			"files_skipped":        stats.FilesSkipped,
 			"dependencies_updated": stats.DepsExtracted,
 			"fts_updated":          stats.FilesIndexed > 0, // FTS updated if files changed
 			"embeddings_updated":   stats.EmbeddingsGenerated > 0,
