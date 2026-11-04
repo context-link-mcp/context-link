@@ -93,20 +93,12 @@ func runExtract(cmd *cobra.Command, args []string) error {
 		Level: parseLogLevel(flagLogLevel),
 	})))
 
-	if flagExtractFormat != "json" {
-		return &exitError{exitUsage, fmt.Errorf("unsupported --format %q (only json)", flagExtractFormat)}
-	}
-	if flagExtractProfile != "" && flagExtractProfile != extract.ProfileThreatModel {
-		return &exitError{exitUsage, fmt.Errorf("unknown --profile %q (want %q)", flagExtractProfile, extract.ProfileThreatModel)}
-	}
-	if len(flagExtractQueries) == 0 && flagExtractProfile == "" {
-		return &exitError{exitUsage, errors.New("at least one --query or a --profile is required")}
-	}
-	if flagExtractDepDepth != 0 && flagExtractDepDepth != 1 {
-		return &exitError{exitUsage, fmt.Errorf("unsupported --dependency-depth %d (want 0 or 1)", flagExtractDepDepth)}
-	}
-	if flagExtractReserve < 0 || flagExtractReserve > extract.MaxDependencyReservePercent {
-		return &exitError{exitUsage, fmt.Errorf("unsupported --dependency-reserve %d (want 0-%d)", flagExtractReserve, extract.MaxDependencyReservePercent)}
+	if err := validateExtractFlags(extractFlagValues{
+		format: flagExtractFormat, profile: flagExtractProfile, queries: flagExtractQueries,
+		depDepth: flagExtractDepDepth, reserve: flagExtractReserve,
+		budget: flagExtractBudget, perFile: flagExtractPerFile,
+	}); err != nil {
+		return &exitError{exitUsage, err}
 	}
 
 	cfg, err := config.Load(flagConfigFile)
@@ -123,6 +115,7 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return &exitError{exitUsage, err}
 	}
+	cfg.DBPath = config.DBPathFor(cfg.DBPath, root)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -182,6 +175,43 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	}
 
 	return json.NewEncoder(os.Stdout).Encode(res)
+}
+
+// extractFlagValues are the extract flags checked by validateExtractFlags.
+type extractFlagValues struct {
+	format, profile   string
+	queries           []string
+	depDepth, reserve int
+	budget, perFile   int
+}
+
+// validateExtractFlags rejects invalid extract flag values; runExtract exits
+// with exitUsage on its error.
+func validateExtractFlags(f extractFlagValues) error {
+	if f.format != "json" {
+		return fmt.Errorf("unsupported --format %q (only json)", f.format)
+	}
+	if f.profile != "" && f.profile != extract.ProfileThreatModel {
+		return fmt.Errorf("unknown --profile %q (want %q)", f.profile, extract.ProfileThreatModel)
+	}
+	if len(f.queries) == 0 && f.profile == "" {
+		return errors.New("at least one --query or a --profile is required")
+	}
+	if f.depDepth != 0 && f.depDepth != 1 {
+		return fmt.Errorf("unsupported --dependency-depth %d (want 0 or 1)", f.depDepth)
+	}
+	if f.reserve < 0 || f.reserve > extract.MaxDependencyReservePercent {
+		return fmt.Errorf("unsupported --dependency-reserve %d (want 0-%d)", f.reserve, extract.MaxDependencyReservePercent)
+	}
+	// extract.Run treats 0 as "use the default"; on the command line a
+	// non-positive value is a mistake, not a request for the default.
+	if f.budget <= 0 {
+		return fmt.Errorf("unsupported --budget-bytes %d (want a positive number)", f.budget)
+	}
+	if f.perFile <= 0 {
+		return fmt.Errorf("unsupported --max-symbols-per-file %d (want a positive number)", f.perFile)
+	}
+	return nil
 }
 
 // newEmbedder returns the ONNX embedder when configured and it initializes,

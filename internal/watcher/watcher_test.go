@@ -54,16 +54,31 @@ func TestIsRelevantFile(t *testing.T) {
 	}
 }
 
-func TestSkipDirs(t *testing.T) {
+// TestWatcher_SkipsWalkerIgnoredDirs checks that the watcher skips exactly
+// the directories the indexer's walk skips, including .gitignore rules.
+func TestWatcher_SkipsWalkerIgnoredDirs(t *testing.T) {
 	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o644))
+	w := New(buildTestRegistry(t), setupTestDB(t), &mockEmbedder{}, root, "test-repo", 1)
 
-	assert.True(t, skipDirs["node_modules"])
-	assert.True(t, skipDirs[".git"])
-	assert.True(t, skipDirs["vendor"])
-	assert.True(t, skipDirs["__pycache__"])
-	assert.True(t, skipDirs["target"])
-	assert.False(t, skipDirs["src"])
-	assert.False(t, skipDirs["internal"])
+	tests := []struct {
+		dir  string
+		skip bool
+	}{
+		{"", false}, // the root itself
+		{"src", false},
+		{"internal/store", false},
+		{"node_modules", true},
+		{".git", true},
+		{"vendor", true},
+		{"__pycache__", true},
+		{"src/generated", true}, // .gitignore
+		{"../outside", true},
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.skip, w.filter.Skip(filepath.Join(root, filepath.FromSlash(tc.dir))), tc.dir)
+	}
 }
 
 // Test helpers
@@ -122,6 +137,8 @@ func TestWatcher_AddDirs(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(root, "src", "components"), 0755))
 	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
 	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "src", "generated", "deep"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o644))
 
 	// Create fsnotify watcher
 	fsw, err := fsnotify.NewWatcher()
@@ -160,6 +177,7 @@ func TestWatcher_AddDirs(t *testing.T) {
 		if filepath.Base(path) == ".git" {
 			hasGit = true
 		}
+		assert.NotContains(t, path, "generated", "gitignored directories are not watched")
 	}
 
 	assert.True(t, hasRoot, "root should be watched")
@@ -243,7 +261,8 @@ func TestWatcher_IsRelevantEvent(t *testing.T) {
 		{"Write .ts file", fsnotify.Event{Name: "app.ts", Op: fsnotify.Write}, true},
 		{"Remove .py file", fsnotify.Event{Name: "script.py", Op: fsnotify.Remove}, true},
 		{"Chmod .go file", fsnotify.Event{Name: "main.go", Op: fsnotify.Chmod}, false},
-		{"Rename .go file", fsnotify.Event{Name: "main.go", Op: fsnotify.Rename}, false},
+		{"Rename .go file", fsnotify.Event{Name: "main.go", Op: fsnotify.Rename}, true},
+		{"Rename .md file", fsnotify.Event{Name: "README.md", Op: fsnotify.Rename}, false},
 		{"Create .md file", fsnotify.Event{Name: "README.md", Op: fsnotify.Create}, false},
 		{"Write .json file", fsnotify.Event{Name: "data.json", Op: fsnotify.Write}, false},
 	}

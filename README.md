@@ -154,7 +154,7 @@ brew install context-link-mcp/tap/context-link
 Download the latest executable for your OS from the GitHub Releases page and place it in your system's PATH.
 
 ### Step 2: Index Your Project
-Navigate to your codebase and run the indexer. This creates a local `.context-link.db` file containing your vector embeddings and AST mappings.
+Navigate to your codebase and run the indexer. This creates a local `.context-link.db` file in the project root containing your vector embeddings and AST mappings.
 
 ```bash
 cd /path/to/your/project
@@ -243,7 +243,7 @@ While the Quick Start covers standard setups, `context-link` supports advanced w
 
 ### Advanced Indexing
 
-The index is stored in `.context-link.db` in your current directory. Re-run anytime — only changed files are re-processed. Semantic search embeddings are generated automatically.
+The index is stored in `.context-link.db` in the project root (the `--project-root` or `[path]` you index, whatever the current directory), so `index`, `serve` and `extract` find the same database without `--db-path`. Re-run anytime — only changed files are re-processed. Semantic search embeddings are generated automatically.
 ```bash
 ./bin/context-link index --project-root /path/to/your/project
 ```
@@ -345,7 +345,7 @@ rm .context-link.db
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db-path` | `.context-link.db` | Path to SQLite database |
+| `--db-path` | `<project root>/.context-link.db` | Path to SQLite database (a relative path is relative to the current directory) |
 | `--project-root` | Current directory | Root directory of the project |
 | `--log-level` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `--config` | `.context-link.yaml` | Path to config file |
@@ -368,8 +368,8 @@ rm .context-link.db
 |---|---|---|---|
 | **Query** | `--query` | _(none)_ | Natural-language query; repeat for several. At least one `--query` or a `--profile` is required |
 |  | `--profile` | _(none)_ | `threat-model` adds security-oriented queries and boosts HTTP entry-point handlers |
-| **Output** | `--budget-bytes` | `50000` | Limit for the summed size of `files[].content` |
-|  | `--max-symbols-per-file` | `3` | Maximum ranked symbols per file (dependency code does not count) |
+| **Output** | `--budget-bytes` | `50000` | Limit for the summed size of `files[].content` (must be positive) |
+|  | `--max-symbols-per-file` | `3` | Maximum ranked symbols per file (dependency code does not count; must be positive) |
 |  | `--dependency-depth` | `1` | `1` packs the code of each match's direct dependencies within the budget; `0` lists them as references only |
 |  | `--dependency-reserve` | `25` | Percent of the budget (0-90) that matches cannot use until their dependencies' code is packed; unused reserve goes back to the remaining matches, then skeletons. `0` lets matches fill the whole budget first |
 |  | `--include-tests` | `false` | Include tests, fixtures, vendored code and migrations (excluded by default) |
@@ -385,7 +385,7 @@ Exit codes: `0` ok, `1` usage error, `2` index unusable (callers can continue wi
 
 | Category | Flag | Default | Description |
 |---|---|---|---|
-| **Behavior** | `--watch` | `false` | Auto re-index on file changes (fsnotify with 500ms debounce) |
+| **Behavior** | `--watch` | `false` | Auto re-index on file changes (fsnotify with 500ms debounce). Watches the directories `index` walks (skips `node_modules`, `vendor`, `.git`, ... and root `.gitignore` matches), including ones created later; renames and moves count as changes. Watcher re-indexes and `reindex_project` calls run one at a time |
 |  | `--tools` | _(all)_ | Comma-separated list of MCP tools to enable (e.g., `ping,get_code_by_symbol`) |
 |  | `--repo-name` | Directory name | Repository to serve; must match the `--repo-name` given to `index` |
 | **Embeddings** _(Advanced)_ | `--model-path` | _(built-in)_ | Path to custom ONNX model (overrides built-in Model2Vec) |
@@ -395,7 +395,7 @@ Exit codes: `0` ok, `1` usage error, `2` index unusable (callers can continue wi
 ### Configuration File
 
 ```yaml
-db_path: .context-link.db
+# db_path: .context-link.db  # default: .context-link.db in the project root; relative = relative to the current dir
 project_root: .
 log_level: info
 
@@ -424,7 +424,7 @@ log_level: info
 #   - find_http_routes
 ```
 
-Environment variables with the `CONTEXT_LINK_` prefix also work (e.g., `CONTEXT_LINK_LOG_LEVEL=debug`).
+Every key can also be set with a `CONTEXT_LINK_` environment variable, which overrides the config file (CLI flags override both): `CONTEXT_LINK_DB_PATH`, `CONTEXT_LINK_PROJECT_ROOT`, `CONTEXT_LINK_LOG_LEVEL`, `CONTEXT_LINK_MODEL_PATH`, `CONTEXT_LINK_VOCAB_PATH`, `CONTEXT_LINK_ORT_LIB_PATH` and `CONTEXT_LINK_TOOLS` (comma-separated, e.g. `ping,get_code_by_symbol`).
 
 ---
 

@@ -233,7 +233,7 @@ Version is injected at build time via `-X main.version=<tag>` ldflags, passed th
 
 ### File Watcher
 
-The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). Directories like `node_modules`, `.git`, `vendor`, `__pycache__`, and `target` are excluded.
+The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). It watches exactly the directories the walker indexes (`indexer.DirFilter`: `node_modules`, `.git`, `vendor`, `__pycache__`, ... and root `.gitignore` matches are excluded), adds directories created later, and treats renames like removals. The watcher re-indexes through the server's `Indexer`, whose runs are serialised, so watcher flushes and `reindex_project` calls never overlap; on shutdown the watcher waits for its in-flight run and `Indexer.Drain()` waits for the rest before the embedder and DB are closed.
 
 ## Design Principles
 

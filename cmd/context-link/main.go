@@ -92,7 +92,7 @@ var versionCmd = &cobra.Command{
 
 func init() {
 	// Persistent flags available to all subcommands.
-	rootCmd.PersistentFlags().StringVar(&flagDBPath, "db-path", "", "path to SQLite database (default: .context-link.db)")
+	rootCmd.PersistentFlags().StringVar(&flagDBPath, "db-path", "", "path to SQLite database (default: .context-link.db in the project root)")
 	rootCmd.PersistentFlags().StringVar(&flagProjectRoot, "project-root", "", "root directory of the project to index (default: current dir)")
 	rootCmd.PersistentFlags().StringVar(&flagLogLevel, "log-level", "info", "log level: debug, info, warn, error")
 	rootCmd.PersistentFlags().StringVar(&flagConfigFile, "config", "", "config file (default: .context-link.yaml in current dir)")
@@ -143,6 +143,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.DBPath = config.DBPathFor(cfg.DBPath, indexPath)
 
 	// Open and migrate the database.
 	db, err := store.Open(cfg.DBPath)
@@ -218,8 +219,9 @@ func resolveIndexTarget(cfg *config.Config, args []string, repoNameFlag string) 
 	return config.ResolveProject(indexPath, repoNameFlag)
 }
 
-// resolveServeProject makes cfg.ProjectRoot absolute and sets cfg.RepoName,
-// exactly as index resolves them, so serve queries the rows index wrote.
+// resolveServeProject makes cfg.ProjectRoot absolute and sets cfg.RepoName
+// and the default cfg.DBPath, exactly as index resolves them, so serve
+// queries the rows index wrote.
 func resolveServeProject(cfg *config.Config, repoNameFlag string) error {
 	root, repoName, err := config.ResolveProject(cfg.ProjectRoot, repoNameFlag)
 	if err != nil {
@@ -227,6 +229,7 @@ func resolveServeProject(cfg *config.Config, repoNameFlag string) error {
 	}
 	cfg.ProjectRoot = root
 	cfg.RepoName = repoName
+	cfg.DBPath = config.DBPathFor(cfg.DBPath, root)
 	return nil
 }
 
@@ -357,7 +360,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Tools = flagTools
 	}
 
-	// Build language registry and indexer for reindex_project tool.
+	// Build language registry and the one indexer shared by reindex_project
+	// and the watcher, so their index runs are serialised.
 	registry := buildLanguageRegistry()
 	idx := indexer.NewIndexer(registry, db, 4, embedder)
 
@@ -369,19 +373,37 @@ func runServe(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	// Start file watcher if --watch is enabled.
+	watcherDone := make(chan struct{})
 	if flagWatch {
-		// Same root and repo name as reindex_project; every watcher re-index
-		// drops the server's index-derived caches.
+		// Same root, repo name and indexer as reindex_project; every watcher
+		// re-index drops the server's index-derived caches.
 		w := watcher.New(registry, db, embedder, cfg.ProjectRoot, cfg.RepoName, 4).
+			WithIndexer(idx).
 			WithOnIndexed(srv.NotifyIndexed)
 		go func() {
+			defer close(watcherDone)
 			if err := w.Watch(ctx); err != nil {
 				slog.Error("file watcher failed", "error", err)
 			}
 		}()
+	} else {
+		close(watcherDone)
 	}
 
-	return srv.Run(ctx)
+	err = srv.Run(ctx)
+	// The deferred closes of the embedder and database run after this.
+	stopIndexing(stop, watcherDone, idx)
+	return err
+}
+
+// stopIndexing ends all indexing before serve closes the embedder and the
+// database: it cancels ctx (stop), which stops the watcher and interrupts
+// its re-index, waits for the watcher to return, then waits for any other
+// index run (reindex_project) and rejects new ones.
+func stopIndexing(stop context.CancelFunc, watcherDone <-chan struct{}, idx *indexer.Indexer) {
+	stop()
+	<-watcherDone
+	idx.Drain()
 }
 
 // parseLogLevel converts a string level to slog.Level.
