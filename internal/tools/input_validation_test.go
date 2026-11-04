@@ -273,3 +273,39 @@ func TestSemanticSearch_TopKValidation(t *testing.T) {
 		assert.True(t, result.IsError, "top_k %v", k)
 	}
 }
+
+// TestRoutes_Truncated: more than 100 matching routes set "truncated" (the
+// cap was silent before).
+func TestRoutes_Truncated(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		routes int
+		want   bool
+	}{
+		{"at cap", 100, false},
+		{"over cap", 101, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := openToolTestDB(t)
+			for i := 0; i < tc.routes; i++ {
+				insertRoute(t, db, "repo", "GET", fmt.Sprintf("/r%03d", i), "app.py", "flask", "definition")
+			}
+			result, text := callTool(t, routesHandler(db, "repo", "", NewSessionTokenTracker()), map[string]any{})
+			require.False(t, result.IsError, text)
+			var resp struct {
+				RouteCount      int   `json:"route_count"`
+				Truncated       bool  `json:"truncated"`
+				RoutesTruncated bool  `json:"routes_truncated"`
+				Matches         []any `json:"matches"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(text), &resp))
+			assert.Equal(t, 100, resp.RouteCount)
+			assert.Equal(t, tc.want, resp.Truncated)
+			assert.Equal(t, tc.want, resp.RoutesTruncated)
+			assert.NotNil(t, resp.Matches, "matches is [] not null")
+		})
+	}
+}

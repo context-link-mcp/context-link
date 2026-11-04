@@ -18,6 +18,8 @@ func RegisterRoutesTool(s *server.MCPServer, db *store.DB, repoName, projectRoot
 			"Discovers HTTP route definitions and call sites in the codebase. "+
 				"Supports Express, Gin, FastAPI, Flask, and similar frameworks. "+
 				"Matches route definitions to their call sites with confidence scoring. "+
+				"At most 100 routes are returned; 'truncated' is true when more match the filter "+
+				"(routes_truncated) or route matching hit its cap (matches_truncated). "+
 				"Example: find_http_routes(method='GET', path='/api/users').",
 		),
 		mcp.WithString("method",
@@ -51,6 +53,9 @@ type routeMatchEntry struct {
 	Confidence float64    `json:"confidence"`
 }
 
+// maxRouteResults caps the routes find_http_routes returns.
+const maxRouteResults = 100
+
 // routesHandler returns the MCP tool handler for find_http_routes.
 func routesHandler(db *store.DB, repoName, projectRoot string, tracker *SessionTokenTracker) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -65,12 +70,16 @@ func routesHandler(db *store.DB, repoName, projectRoot string, tracker *SessionT
 			Method:   req.GetString("method", ""),
 			Path:     req.GetString("path", ""),
 			FilePath: filePathParam,
-			Limit:    100,
+			Limit:    maxRouteResults + 1, // one extra row reveals truncation
 		}
 
 		routes, err := store.FindRoutes(ctx, db, repoName, filter)
 		if err != nil {
 			return mcp.NewToolResultError("find_http_routes: " + err.Error()), nil
+		}
+		routesTruncated := len(routes) > maxRouteResults
+		if routesTruncated {
+			routes = routes[:maxRouteResults]
 		}
 
 		// Build route entries and look up handler symbol names.
@@ -94,9 +103,12 @@ func routesHandler(db *store.DB, repoName, projectRoot string, tracker *SessionT
 		}
 
 		// Find matches between definitions and call sites.
-		matches, _ := store.MatchRoutes(ctx, db, repoName)
+		matched, err := store.MatchRoutesDetailed(ctx, db, repoName)
+		if err != nil {
+			return mcp.NewToolResultError("find_http_routes: route matching failed: " + err.Error()), nil
+		}
 		matchEntries := []routeMatchEntry{}
-		for _, m := range matches {
+		for _, m := range matched.Matches {
 			matchEntries = append(matchEntries, routeMatchEntry{
 				Definition: routeEntry{
 					Method:      m.Definition.Method,
@@ -139,6 +151,11 @@ func routesHandler(db *store.DB, repoName, projectRoot string, tracker *SessionT
 			"route_count": len(entries),
 			"matches":     matchEntries,
 			"match_count": len(matchEntries),
+			// truncated: more than maxRouteResults routes matched the filter,
+			// or route matching hit its definition/call-site cap.
+			"truncated":         routesTruncated || matched.Truncated,
+			"routes_truncated":  routesTruncated,
+			"matches_truncated": matched.Truncated,
 			"metadata": models.ToolMetadata{
 				TimingMs:           timingMs,
 				TokensSavedEst:     savings.Saved,
