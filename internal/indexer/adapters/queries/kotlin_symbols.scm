@@ -41,11 +41,31 @@
   (class_body) @symbol.body
 ) @symbol.class
 
-; === Property declarations ===
+; === Property declarations (top-level and class/object members) ===
 ; val baseUrl = "https://..."
 ; var count: Int = 0
-(property_declaration
-  (variable_declaration
-    (simple_identifier) @symbol.name
-  )
-) @symbol.variable
+; Anchored to source_file and class bodies: a val/var inside a function body
+; (under statements) is a local, not a symbol.
+(source_file
+  (property_declaration
+    (variable_declaration
+      (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)
+
+(class_body
+  (property_declaration
+    (variable_declaration
+      (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)
+
+(enum_class_body
+  (property_declaration
+    (variable_declaration
+      (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)

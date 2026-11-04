@@ -118,13 +118,5 @@
     "language": "swift",
     "start_line": 50,
     "end_line": 53
-  },
-  {
-    "name": "user",
-    "qualified_name": "user",
-    "kind": "variable",
-    "language": "swift",
-    "start_line": 51,
-    "end_line": 51
   }
 ]

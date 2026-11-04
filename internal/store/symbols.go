@@ -25,12 +25,14 @@ func GetSymbolByID(ctx context.Context, db *DB, id int64) (*models.Symbol, error
 }
 
 // GetSymbolByName retrieves a symbol by exact name within a repo.
-// If multiple symbols share the same name, returns the first match.
+// If multiple symbols share the same name (in several files, or overloads in
+// one file), returns the first by file path, then start line.
 func GetSymbolByName(ctx context.Context, db *DB, repoName, name string) (*models.Symbol, error) {
 	row := db.QueryRowContext(ctx,
 		`SELECT id, repo_name, name, qualified_name, kind, file_path,
 		        content_hash, code_block, start_line, end_line, language, indexed_at
-		 FROM symbols WHERE repo_name = ? AND name = ? LIMIT 1`,
+		 FROM symbols WHERE repo_name = ? AND name = ?
+		 ORDER BY file_path, start_line, id LIMIT 1`,
 		repoName, name,
 	)
 
@@ -38,11 +40,14 @@ func GetSymbolByName(ctx context.Context, db *DB, repoName, name string) (*model
 }
 
 // GetSymbolByQualifiedName retrieves a symbol by its fully qualified name.
+// Overloads share a qualified name; the first by file path, then start line,
+// is returned.
 func GetSymbolByQualifiedName(ctx context.Context, db *DB, repoName, qualifiedName string) (*models.Symbol, error) {
 	row := db.QueryRowContext(ctx,
 		`SELECT id, repo_name, name, qualified_name, kind, file_path,
 		        content_hash, code_block, start_line, end_line, language, indexed_at
-		 FROM symbols WHERE repo_name = ? AND qualified_name = ? LIMIT 1`,
+		 FROM symbols WHERE repo_name = ? AND qualified_name = ?
+		 ORDER BY file_path, start_line, id LIMIT 1`,
 		repoName, qualifiedName,
 	)
 
@@ -65,7 +70,8 @@ func SearchSymbolsByName(ctx context.Context, db *DB, repoName, pattern string, 
 		        WHEN qualified_name = ? THEN 1
 		        WHEN name LIKE ? THEN 2
 		        ELSE 3
-		   END
+		   END,
+		   file_path, start_line, id
 		 LIMIT ?`,
 		repoName,
 		"%"+pattern+"%", "%"+pattern+"%",
@@ -99,7 +105,9 @@ func GetSymbolsByFile(ctx context.Context, db *DB, repoName, filePath string) ([
 }
 
 // BatchInsertSymbols inserts multiple symbols in a single transaction.
-// Uses INSERT OR REPLACE to handle re-indexing of existing symbols.
+// Uses INSERT OR REPLACE to handle re-indexing of existing symbols. A symbol
+// is unique by (repo, qualified name, file, start line), so same-name symbols
+// at different lines of one file (overloads, several init()) are all kept.
 func BatchInsertSymbols(ctx context.Context, db *DB, symbols []models.Symbol) error {
 	if len(symbols) == 0 {
 		return nil
@@ -151,10 +159,12 @@ func DeleteSymbolsByFile(ctx context.Context, db *DB, repoName, filePath string)
 }
 
 // GetSymbolNameIndex builds a map of symbol name/qualified_name → ID for
-// dependency resolution within a repo.
+// dependency resolution within a repo. A name shared by several symbols maps
+// to the first by file path, then start line.
 func GetSymbolNameIndex(ctx context.Context, db *DB, repoName string) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, name, qualified_name FROM symbols WHERE repo_name = ?`,
+		`SELECT id, name, qualified_name FROM symbols WHERE repo_name = ?
+		 ORDER BY file_path, start_line, id`,
 		repoName,
 	)
 	if err != nil {
@@ -169,8 +179,10 @@ func GetSymbolNameIndex(ctx context.Context, db *DB, repoName string) (map[strin
 		if err := rows.Scan(&id, &name, &qualifiedName); err != nil {
 			return nil, fmt.Errorf("store: failed to scan symbol index row: %w", err)
 		}
-		index[name] = id
-		if qualifiedName != name {
+		if _, ok := index[name]; !ok {
+			index[name] = id
+		}
+		if _, ok := index[qualifiedName]; !ok {
 			index[qualifiedName] = id
 		}
 	}

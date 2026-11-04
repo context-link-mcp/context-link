@@ -36,11 +36,31 @@
 ; === Stored and computed property declarations ===
 ; let name: String
 ; var isLoading = false
-(property_declaration
-  name: (pattern
-    bound_identifier: (simple_identifier) @symbol.name
-  )
-) @symbol.variable
+; Anchored to source_file and type bodies: a let/var inside a function body
+; (under statements) is a local, not a symbol.
+(source_file
+  (property_declaration
+    name: (pattern
+      bound_identifier: (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)
+
+(class_body
+  (property_declaration
+    name: (pattern
+      bound_identifier: (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)
+
+(enum_class_body
+  (property_declaration
+    name: (pattern
+      bound_identifier: (simple_identifier) @symbol.name
+    )
+  ) @symbol.variable
+)
 
 ; === Typealias declarations ===
 ; typealias Completion = (Result<Data, Error>) -> Void

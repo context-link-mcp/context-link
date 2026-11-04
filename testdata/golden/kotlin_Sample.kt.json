@@ -41,16 +41,16 @@
   },
   {
     "name": "get",
-    "qualified_name": "get",
-    "kind": "function",
+    "qualified_name": "UserCache.get",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 28,
     "end_line": 28
   },
   {
     "name": "put",
-    "qualified_name": "put",
-    "kind": "function",
+    "qualified_name": "UserCache.put",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 29,
     "end_line": 31
@@ -73,32 +73,32 @@
   },
   {
     "name": "findById",
-    "qualified_name": "findById",
-    "kind": "function",
+    "qualified_name": "UserRepository.findById",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 37,
     "end_line": 38
   },
   {
     "name": "findAll",
-    "qualified_name": "findAll",
-    "kind": "function",
+    "qualified_name": "UserRepository.findAll",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 40,
     "end_line": 40
   },
   {
     "name": "save",
-    "qualified_name": "save",
-    "kind": "function",
+    "qualified_name": "UserRepository.save",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 42,
     "end_line": 47
   },
   {
     "name": "delete",
-    "qualified_name": "delete",
-    "kind": "function",
+    "qualified_name": "UserRepository.delete",
+    "kind": "method",
     "language": "kotlin",
     "start_line": 49,
     "end_line": 51
@@ -110,13 +110,5 @@
     "language": "kotlin",
     "start_line": 54,
     "end_line": 57
-  },
-  {
-    "name": "user",
-    "qualified_name": "user",
-    "kind": "variable",
-    "language": "kotlin",
-    "start_line": 55,
-    "end_line": 55
   }
 ]

@@ -54,17 +54,24 @@
 
 ; === Const declarations (single) ===
 ; const Foo = "bar"
-(const_declaration
-  (const_spec
-    name: (identifier) @symbol.name
-    value: (_) @symbol.body
-  )
-) @symbol.variable
+; Anchored to source_file: a const or var inside a function body is a local,
+; not a symbol (it would otherwise be the innermost symbol around the calls
+; next to it and take their edges).
+(source_file
+  (const_declaration
+    (const_spec
+      name: (identifier) @symbol.name
+      value: (_) @symbol.body
+    )
+  ) @symbol.variable
+)
 
 ; === Var declarations (single) ===
 ; var Foo string
-(var_declaration
-  (var_spec
-    name: (identifier) @symbol.name
-  )
-) @symbol.variable
+(source_file
+  (var_declaration
+    (var_spec
+      name: (identifier) @symbol.name
+    )
+  ) @symbol.variable
+)

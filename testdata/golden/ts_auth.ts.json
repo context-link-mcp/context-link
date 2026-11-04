@@ -74,7 +74,7 @@
   {
     "name": "createGuestToken",
     "qualified_name": "createGuestToken",
-    "kind": "variable",
+    "kind": "function",
     "language": "typescript",
     "start_line": 66,
     "end_line": 73

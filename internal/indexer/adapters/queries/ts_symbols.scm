@@ -25,14 +25,18 @@
 ; === Arrow functions assigned to variables ===
 ; const foo = () => { ... }
 ; const foo = async () => { ... }
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @symbol.name
-    value: (arrow_function
-      body: (_) @symbol.body
+; Anchored to program: an arrow function assigned to a const inside a function
+; body is a local, not a symbol.
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: (arrow_function
+        body: (_) @symbol.body
+      )
     )
-  )
-) @symbol.function
+  ) @symbol.function
+)
 
 ; === Exported arrow functions ===
 ; export const foo = () => { ... }
@@ -58,6 +62,22 @@
 ; export class Foo { ... }
 (export_statement
   declaration: (class_declaration
+    name: (type_identifier) @symbol.name
+    body: (class_body) @symbol.body
+  ) @symbol.class
+)
+
+; === Abstract class declarations ===
+; abstract class Foo { ... }
+(abstract_class_declaration
+  name: (type_identifier) @symbol.name
+  body: (class_body) @symbol.body
+) @symbol.class
+
+; === Exported abstract class declarations ===
+; export abstract class Foo { ... }
+(export_statement
+  declaration: (abstract_class_declaration
     name: (type_identifier) @symbol.name
     body: (class_body) @symbol.body
   ) @symbol.class

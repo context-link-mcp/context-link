@@ -265,7 +265,7 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 // are new, changed, or deleted. Deleted files have their symbols removed (memories
 // become orphaned via ON DELETE SET NULL). Returns changed files, unchanged count,
 // deleted count and orphaned memory count. Files that called into the deleted
-// files are marked for re-resolution (see store.DetachFileDependencies).
+// files are marked for re-resolution (see store.DeleteFileIndex).
 func (idx *Indexer) filterChangedFiles(
 	ctx context.Context,
 	files []DiscoveredFile,
@@ -318,21 +318,12 @@ func (idx *Indexer) filterChangedFiles(
 			slog.Warn("indexer: failed to mark callers of removed file", "file", dbPath, "error", markErr)
 			continue // keep the file record so the next run retries
 		}
-		if detachErr := store.DetachFileDependencies(ctx, idx.db, repoName, dbPath); detachErr != nil {
-			slog.Warn("indexer: failed to detach dependencies for removed file", "file", dbPath, "error", detachErr)
+		// One transaction removes the file's FTS rows, embeddings, edges, routes,
+		// call sites, symbols and file record (the same rows a re-index
+		// replaces), so no ghost search hit outlives the file.
+		if delErr := store.DeleteFileIndex(ctx, idx.db, repoName, dbPath); delErr != nil {
+			slog.Warn("indexer: failed to delete index of removed file", "file", dbPath, "error", delErr)
 			continue // keep the file record so the next run retries
-		}
-		if delErr := store.DeleteCallSitesByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
-			slog.Warn("indexer: failed to delete call sites for removed file", "file", dbPath, "error", delErr)
-		}
-		if delErr := store.DeleteSymbolsByFile(ctx, idx.db, repoName, dbPath); delErr != nil {
-			slog.Warn("indexer: failed to delete symbols for removed file", "file", dbPath, "error", delErr)
-		}
-		if delErr := store.DeleteRoutesByFile(ctx, idx.db, repoName, dbPath, "definition"); delErr != nil {
-			slog.Warn("indexer: failed to delete routes for removed file", "file", dbPath, "error", delErr)
-		}
-		if delErr := store.DeleteFileByPath(ctx, idx.db, repoName, dbPath); delErr != nil {
-			slog.Warn("indexer: failed to delete file record", "file", dbPath, "error", delErr)
 		}
 		deleted++
 		slog.Info("indexer: removed deleted file", "file", dbPath)
@@ -543,6 +534,10 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 
 	relinked := 0
 	for _, path := range filePaths {
+		// symbolsByFile lists a file's symbols by start line. Same-name symbols
+		// in one file (overloads, several init()) share a key: the first one,
+		// the lowest start line, takes the memories, and the key is consumed so
+		// a later one does not take them over.
 		syms := symbolsByFile[path]
 		for _, s := range syms {
 			key := s.QualifiedName + "\x00" + s.FilePath
@@ -550,6 +545,7 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 			if !ok || len(orphans) == 0 {
 				continue
 			}
+			delete(orphanMap, key)
 			for _, m := range orphans {
 				if err := store.RelinkMemory(ctx, idx.db, m.ID, s.ID); err != nil {
 					slog.Warn("indexer: failed to relink memory", "memory_id", m.ID, "symbol", s.QualifiedName, "error", err)

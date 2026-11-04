@@ -21,14 +21,18 @@
 
 ; === Arrow functions assigned to variables ===
 ; const foo = () => { ... }
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @symbol.name
-    value: (arrow_function
-      body: (_) @symbol.body
+; Anchored to program: an arrow function assigned to a const inside a function
+; body is a local, not a symbol.
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: (arrow_function
+        body: (_) @symbol.body
+      )
     )
-  )
-) @symbol.function
+  ) @symbol.function
+)
 
 ; === Exported arrow functions ===
 ; export const foo = () => { ... }
