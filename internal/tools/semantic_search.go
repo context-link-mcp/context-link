@@ -68,7 +68,7 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 			mcp.Description("Filter results to symbols whose file path starts with this prefix. Example: 'src/auth/'."),
 		),
 		mcp.WithNumber("min_similarity",
-			mcp.Description("Minimum cosine similarity threshold (0.0–1.0, default: 0.3). Higher values return fewer but more relevant results."),
+			mcp.Description("Minimum cosine similarity threshold (0.0–1.0, default: 0.3), applied to every result including keyword (FTS) matches. Higher values return fewer but more relevant results."),
 		),
 	)
 	s.AddTool(tool, WithTimeout(timeout, semanticSearchHandler(db, embedder, repoName, tracker, vecCache)))
@@ -76,14 +76,18 @@ func RegisterSemanticSearchTool(s *server.MCPServer, db *store.DB, embedder vect
 
 // HybridHit is one symbol returned by HybridSearch.
 type HybridHit struct {
-	SymbolID    int64
-	Score       float64 // Reciprocal Rank Fusion score; comparable across queries
-	Similarity  float32 // best vector similarity (0 if FTS-only)
-	MatchSource string  // "vector", "fts", or "both"
+	SymbolID int64
+	Score    float64 // Reciprocal Rank Fusion score; comparable across queries
+	// Similarity is the cosine similarity between the query and the symbol's
+	// stored vector, for every hit: FTS-only hits get theirs looked up after
+	// fusion. A hit whose vector is missing or not comparable has 0.
+	Similarity  float32
+	MatchSource string // "vector", "fts", or "both"
 }
 
 // rrfFuse merges ranked results from vector KNN and FTS5 using Reciprocal Rank
-// Fusion (RRF) with constant k=60. Returns fused results sorted by RRF score.
+// Fusion (RRF) with constant k=60. Returns fused results sorted by RRF score,
+// truncated to topK when topK > 0.
 func rrfFuse(vectorIDs []int64, vectorSims []float32, ftsIDs []int64, topK int) []HybridHit {
 	const k = 60.0
 
@@ -117,20 +121,34 @@ func rrfFuse(vectorIDs []int64, vectorSims []float32, ftsIDs []int64, topK int) 
 		result = append(result, *e)
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Score > result[j].Score
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Score != result[j].Score {
+			return result[i].Score > result[j].Score
+		}
+		return result[i].SymbolID < result[j].SymbolID // deterministic ties
 	})
 
-	if len(result) > topK {
+	if topK > 0 && len(result) > topK {
 		result = result[:topK]
 	}
 	return result
 }
 
 // HybridSearch finds symbols matching a natural-language query by fusing
-// vector KNN with FTS5 keyword search (RRF). It returns up to topK*2 hits so
-// callers can filter and still fill topK. FTS failures degrade to vector-only.
-// cache may be nil.
+// vector KNN with FTS5 keyword search (RRF). FTS failures degrade to
+// vector-only. cache may be nil.
+//
+// filter (kind, file path prefix) is applied inside both searches, before
+// their top-k cuts, so a filtered query still fills topK.
+//
+// minSimilarity applies to every hit, whichever search found it: an FTS-only
+// hit is kept only when its own cosine similarity to the query (looked up from
+// its stored vector, 0 when it has none) is >= minSimilarity. Keyword matches
+// thus re-rank and extend the semantic results but cannot bring in symbols
+// the threshold rejects.
+//
+// It returns up to topK*2 hits, best first, so callers that drop some hits
+// (e.g. extract's test filtering) can still fill topK.
 func HybridSearch(
 	ctx context.Context,
 	db *store.DB,
@@ -139,6 +157,7 @@ func HybridSearch(
 	repoName, query string,
 	topK int,
 	minSimilarity float32,
+	filter store.SymbolFilter,
 ) ([]HybridHit, error) {
 	if embedder == nil {
 		return nil, fmt.Errorf("semantic search is not available — start the server with --model-path and --vocab-path to enable it")
@@ -150,18 +169,27 @@ func HybridSearch(
 
 	fetchLimit := topK * 3
 
+	var allow vectorstore.AllowFunc
+	if !filter.IsZero() {
+		allowed, err := store.FilterSymbolIDs(ctx, db, repoName, filter)
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
+		}
+		allow = func(id int64) bool { _, ok := allowed[id]; return ok }
+	}
+
 	var knnHits []vectorstore.SearchResult
 	if cache != nil {
-		knnHits, err = vectorstore.KNNSearchCached(ctx, db, cache, queryVec, fetchLimit, minSimilarity)
+		knnHits, err = vectorstore.KNNSearchCachedFiltered(ctx, db, cache, queryVec, fetchLimit, minSimilarity, allow)
 	} else {
-		knnHits, err = vectorstore.KNNSearch(ctx, db, repoName, queryVec, fetchLimit, minSimilarity)
+		knnHits, err = vectorstore.KNNSearchFiltered(ctx, db, repoName, queryVec, fetchLimit, minSimilarity, allow)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
 	// FTS search (non-fatal if it fails — degrade to vector-only).
-	ftsHits, ftsErr := store.FTSSearch(ctx, db, repoName, query, fetchLimit)
+	ftsHits, ftsErr := store.FTSSearchFiltered(ctx, db, repoName, query, filter, fetchLimit)
 	if ftsErr != nil {
 		slog.Debug("hybrid search: FTS search failed, degrading to vector-only", "error", ftsErr)
 		ftsHits = nil
@@ -178,7 +206,38 @@ func HybridSearch(
 		ftsIDs[i] = h.SymbolID
 	}
 
-	return rrfFuse(vectorIDs, vectorSims, ftsIDs, topK*2), nil
+	fused := rrfFuse(vectorIDs, vectorSims, ftsIDs, 0)
+
+	// Give FTS-only hits their real similarity and apply the threshold to
+	// them too, before truncating.
+	var ftsOnly []int64
+	for _, h := range fused {
+		if h.MatchSource == "fts" {
+			ftsOnly = append(ftsOnly, h.SymbolID)
+		}
+	}
+	if len(ftsOnly) > 0 {
+		sims, err := vectorstore.Similarities(ctx, db, cache, repoName, queryVec, ftsOnly)
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
+		}
+		kept := fused[:0]
+		for _, h := range fused {
+			if h.MatchSource == "fts" {
+				h.Similarity = sims[h.SymbolID]
+				if h.Similarity < minSimilarity {
+					continue
+				}
+			}
+			kept = append(kept, h)
+		}
+		fused = kept
+	}
+
+	if limit := topK * 2; len(fused) > limit {
+		fused = fused[:limit]
+	}
+	return fused, nil
 }
 
 // semanticSearchHandler returns the ToolHandlerFunc for semantic_search_symbols.
@@ -214,7 +273,8 @@ func semanticSearchHandler(db *store.DB, embedder vectorstore.Embedder, repoName
 		}
 
 		// --- Hybrid search: KNN + FTS fused with RRF ---
-		fused, err := HybridSearch(ctx, db, embedder, cache, repoName, query, topK, minSimilarity)
+		filter := store.SymbolFilter{Kind: kindFilter, FilePathPrefix: pathPrefix}
+		fused, err := HybridSearch(ctx, db, embedder, cache, repoName, query, topK, minSimilarity, filter)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("semantic_search_symbols: %v", err)), nil
 		}

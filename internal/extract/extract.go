@@ -229,7 +229,7 @@ func Run(
 
 	scores := make(map[int64]*scored)
 	for _, q := range queries {
-		hits, err := tools.HybridSearch(ctx, db, embedder, cache, opts.RepoName, q, defaultTopKPerQuery, minSimilarity)
+		hits, err := tools.HybridSearch(ctx, db, embedder, cache, opts.RepoName, q, defaultTopKPerQuery, minSimilarity, store.SymbolFilter{})
 		if err != nil {
 			return nil, fmt.Errorf("extract: search for %q failed: %w", q, err)
 		}

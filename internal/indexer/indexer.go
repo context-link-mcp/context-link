@@ -222,6 +222,13 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 			indexedPaths = append(indexedPaths, r.file.RelPath)
 		}
 		stats.EmbeddingsGenerated = idx.generateEmbeddings(ctx, repoName, indexedPaths, symbolsByFile)
+
+		// Re-check the recorded embedding dimension: once a --force run has
+		// replaced every vector, the mismatch from a previous embedder clears.
+		if err := vectorstore.EnsureEmbeddingDimension(ctx, idx.db, idx.embedder.Dim()); err != nil {
+			slog.Warn("indexer: embeddings of another dimension remain; searches skip them until a --force re-index",
+				"repo", repoName, "error", err)
+		}
 	}
 
 	// Phase 7: Orphan recovery — re-link orphaned memories to newly inserted symbols.

@@ -235,7 +235,9 @@ func TestBERTTokenizer_MaxCharsExceeded(t *testing.T) {
 		"[PAD]": 0, "[UNK]": 100, "[CLS]": 101, "[SEP]": 102,
 	}
 	tok := vectorstore.NewBERTTokenizerFromMap(vocab)
-	longWord := string(make([]byte, 200)) // 200 chars > maxChars (100)
+	// 200 chars > maxChars (100). (NUL bytes would now be dropped by the
+	// BERT clean_text step, so use a run of '0' digits.)
+	longWord := fmt.Sprintf("%0200d", 0)
 	out := tok.Tokenize(longWord, 8)
 
 	assert.Equal(t, int64(100), out.InputIDs[1], "word longer than maxChars should map to [UNK]")

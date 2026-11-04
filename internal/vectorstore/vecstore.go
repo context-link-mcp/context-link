@@ -3,11 +3,14 @@ package vectorstore
 import (
 	"container/heap"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/context-link-mcp/context-link/internal/store"
@@ -23,11 +26,11 @@ type candidate struct {
 	sim      float32
 }
 
-func (h candidateHeap) Len() int            { return len(h) }
-func (h candidateHeap) Less(i, j int) bool  { return h[i].sim < h[j].sim } // min-heap
-func (h candidateHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *candidateHeap) Push(x any)         { *h = append(*h, x.(candidate)) }
-func (h *candidateHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+func (h candidateHeap) Len() int           { return len(h) }
+func (h candidateHeap) Less(i, j int) bool { return h[i].sim < h[j].sim } // min-heap
+func (h candidateHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *candidateHeap) Push(x any)        { *h = append(*h, x.(candidate)) }
+func (h *candidateHeap) Pop() any          { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
 
 // topKFromHeap extracts sorted results (descending similarity) from a min-heap.
 func topKFromHeap(h *candidateHeap) []SearchResult {
@@ -123,6 +126,61 @@ func (vc *VectorCache) loadLocked(ctx context.Context, db *store.DB) error {
 	return nil
 }
 
+// AllowFunc reports whether a symbol may appear in search results. A nil
+// AllowFunc allows every symbol.
+type AllowFunc func(symbolID int64) bool
+
+// knnScanner accumulates the top-k candidates for one query. Vectors that
+// cannot be compared with the query (a different dimension, left over from
+// another embedder, or the zero vector of an input with no known tokens) are
+// skipped, never scored 0: with min_similarity=0 a 0 score would still be
+// returned as a hit.
+type knnScanner struct {
+	query   []float32
+	topK    int
+	minSim  float32
+	allow   AllowFunc
+	h       candidateHeap
+	skipped int // vectors with a different dimension than the query
+}
+
+func newKNNScanner(query []float32, topK int, minSim float32, allow AllowFunc) *knnScanner {
+	return &knnScanner{query: query, topK: topK, minSim: minSim, allow: allow}
+}
+
+func (s *knnScanner) add(id int64, vec []float32) {
+	if len(vec) != len(s.query) {
+		s.skipped++
+		return
+	}
+	if s.allow != nil && !s.allow(id) {
+		return
+	}
+	if isZeroVector(vec) {
+		return
+	}
+	sim := dotProduct(s.query, vec)
+	if sim < s.minSim {
+		return
+	}
+	heap.Push(&s.h, candidate{id, sim})
+	if s.topK > 0 && s.h.Len() > s.topK {
+		heap.Pop(&s.h)
+	}
+}
+
+func (s *knnScanner) results(repoName string) []SearchResult {
+	if s.skipped > 0 {
+		slog.Debug("vectorstore: skipped embeddings with a different dimension than the query — re-index with --force",
+			"repo", repoName, "skipped", s.skipped, "query_dim", len(s.query))
+	}
+	results := topKFromHeap(&s.h)
+	for i := range results {
+		results[i].RepoName = repoName
+	}
+	return results
+}
+
 // KNNSearchCached performs KNN search using the in-memory cache.
 func KNNSearchCached(
 	ctx context.Context,
@@ -132,29 +190,91 @@ func KNNSearchCached(
 	topK int,
 	minSimilarity float32,
 ) ([]SearchResult, error) {
+	return KNNSearchCachedFiltered(ctx, db, cache, query, topK, minSimilarity, nil)
+}
+
+// KNNSearchCachedFiltered is KNNSearchCached restricted to symbols allow
+// accepts. Filtering happens before the top-k cut, so a filtered search
+// still returns up to topK matches.
+func KNNSearchCachedFiltered(
+	ctx context.Context,
+	db *store.DB,
+	cache *VectorCache,
+	query []float32,
+	topK int,
+	minSimilarity float32,
+	allow AllowFunc,
+) ([]SearchResult, error) {
+	if isZeroVector(query) {
+		return nil, nil
+	}
 	ids, vecs, err := cache.snapshot(ctx, db)
 	if err != nil {
 		return nil, err
 	}
-
-	h := &candidateHeap{}
-	heap.Init(h)
-
+	s := newKNNScanner(query, topK, minSimilarity, allow)
 	for i, vec := range vecs {
-		sim := dotProduct(query, vec)
-		if sim >= minSimilarity {
-			heap.Push(h, candidate{ids[i], sim})
-			if topK > 0 && h.Len() > topK {
-				heap.Pop(h)
-			}
+		s.add(ids[i], vec)
+	}
+	return s.results(cache.repoName), nil
+}
+
+// Similarities returns the cosine similarity between query and the stored
+// vector of each of ids. Symbols without a comparable vector (none stored,
+// a different dimension, or the zero vector) are absent from the map.
+// cache may be nil, in which case the vectors are read from the database.
+func Similarities(ctx context.Context, db *store.DB, cache *VectorCache, repoName string, query []float32, ids []int64) (map[int64]float32, error) {
+	out := make(map[int64]float32, len(ids))
+	if len(ids) == 0 || isZeroVector(query) {
+		return out, nil
+	}
+	want := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	score := func(id int64, vec []float32) {
+		if _, ok := want[id]; !ok || len(vec) != len(query) || isZeroVector(vec) {
+			return
 		}
+		out[id] = dotProduct(query, vec)
 	}
 
-	results := topKFromHeap(h)
-	for i := range results {
-		results[i].RepoName = cache.repoName
+	if cache != nil {
+		cids, vecs, err := cache.snapshot(ctx, db)
+		if err != nil {
+			return nil, err
+		}
+		for i, vec := range vecs {
+			score(cids[i], vec)
+		}
+		return out, nil
 	}
-	return results, nil
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, repoName)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT symbol_id, embedding FROM vec_symbols WHERE repo_name = ? AND symbol_id IN (`+placeholders+`)`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: load embeddings for similarity: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	for rows.Next() {
+		var id int64
+		var blob []byte
+		if err := rows.Scan(&id, &blob); err != nil {
+			return nil, fmt.Errorf("vectorstore: scan embedding row: %w", err)
+		}
+		score(id, decodeFloat32s(blob))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("vectorstore: iterate embeddings: %w", err)
+	}
+	return out, nil
 }
 
 // ErrDimensionMismatch is returned when stored embeddings have a different
@@ -249,6 +369,23 @@ func KNNSearch(
 	topK int,
 	minSimilarity float32,
 ) ([]SearchResult, error) {
+	return KNNSearchFiltered(ctx, db, repoName, query, topK, minSimilarity, nil)
+}
+
+// KNNSearchFiltered is KNNSearch restricted to symbols allow accepts, applied
+// before the top-k cut.
+func KNNSearchFiltered(
+	ctx context.Context,
+	db *store.DB,
+	repoName string,
+	query []float32,
+	topK int,
+	minSimilarity float32,
+	allow AllowFunc,
+) ([]SearchResult, error) {
+	if isZeroVector(query) {
+		return nil, nil
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT symbol_id, embedding FROM vec_symbols WHERE repo_name = ?
 	`, repoName)
@@ -257,65 +394,97 @@ func KNNSearch(
 	}
 	defer rows.Close() //nolint:errcheck
 
-	h := &candidateHeap{}
-	heap.Init(h)
-
+	s := newKNNScanner(query, topK, minSimilarity, allow)
 	for rows.Next() {
 		var symbolID int64
 		var blob []byte
 		if err := rows.Scan(&symbolID, &blob); err != nil {
 			return nil, fmt.Errorf("vectorstore: scan embedding row: %w", err)
 		}
-		vec := decodeFloat32s(blob)
-		sim := dotProduct(query, vec)
-		if sim >= minSimilarity {
-			heap.Push(h, candidate{symbolID, sim})
-			if topK > 0 && h.Len() > topK {
-				heap.Pop(h)
-			}
-		}
+		s.add(symbolID, decodeFloat32s(blob))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("vectorstore: iterate embeddings: %w", err)
 	}
-
-	results := topKFromHeap(h)
-	for i := range results {
-		results[i].RepoName = repoName
-	}
-	return results, nil
+	return s.results(repoName), nil
 }
 
-// EnsureEmbeddingDimension checks that the stored embedding dimension matches
-// the expected dimension. If no dimension is recorded yet, it sets it.
-// Returns ErrDimensionMismatch if there is a mismatch (user must re-index).
+// EnsureEmbeddingDimension reconciles the recorded embedding dimension with
+// the current embedder's and with the vectors actually stored:
+//
+//   - recorded dimension equals expectedDim: nothing to do.
+//   - otherwise, if every stored vector already has expectedDim (none stored
+//     yet, or a --force re-index replaced them all), the record is updated to
+//     expectedDim and the mismatch clears.
+//   - otherwise ErrDimensionMismatch: vectors of another dimension remain
+//     and the user must re-index with --force. Searches skip them meanwhile.
+//
+// A failure to read the record or the vectors (e.g. SQLITE_BUSY) is returned
+// as an error and never rewrites the recorded dimension.
 func EnsureEmbeddingDimension(ctx context.Context, db *store.DB, expectedDim int) error {
-	// Read current stored dimension.
+	return ensureEmbeddingDimension(ctx, db, expectedDim)
+}
+
+// metaDB is the subset of *store.DB the dimension bookkeeping uses; tests
+// substitute a failing reader.
+type metaDB interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func ensureEmbeddingDimension(ctx context.Context, db metaDB, expectedDim int) error {
+	storedDim, known, err := storedEmbeddingDimension(ctx, db)
+	if err != nil {
+		return err
+	}
+	if known && storedDim == expectedDim {
+		return nil
+	}
+
+	var other int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vec_symbols WHERE length(embedding) != ?`, expectedDim*4,
+	).Scan(&other); err != nil {
+		return fmt.Errorf("vectorstore: count embeddings by dimension: %w", err)
+	}
+	if other == 0 {
+		return setEmbeddingDimension(ctx, db, expectedDim)
+	}
+
+	stored := "unknown"
+	if known {
+		stored = strconv.Itoa(storedDim)
+	}
+	return fmt.Errorf("%w: stored=%s, expected=%d, %d embeddings of another dimension — re-index with --force",
+		ErrDimensionMismatch, stored, expectedDim, other)
+}
+
+// storedEmbeddingDimension reads the recorded embedding dimension. known is
+// false when no dimension is recorded or the record is not a number.
+func storedEmbeddingDimension(ctx context.Context, db metaDB) (dim int, known bool, err error) {
 	var value string
-	err := db.QueryRowContext(ctx,
+	err = db.QueryRowContext(ctx,
 		`SELECT value FROM vec_meta WHERE key = 'embedding_dim'`,
 	).Scan(&value)
-
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
 	if err != nil {
-		// Table might not exist yet (pre-migration) or no row — set it.
-		return SetEmbeddingDimension(ctx, db, expectedDim)
+		return 0, false, fmt.Errorf("vectorstore: read embedding dimension: %w", err)
 	}
-
-	storedDim, convErr := strconv.Atoi(value)
+	dim, convErr := strconv.Atoi(value)
 	if convErr != nil {
-		// Corrupt value — overwrite.
-		return SetEmbeddingDimension(ctx, db, expectedDim)
+		return 0, false, nil
 	}
-
-	if storedDim != expectedDim {
-		return fmt.Errorf("%w: stored=%d, expected=%d — re-index with --force",
-			ErrDimensionMismatch, storedDim, expectedDim)
-	}
-	return nil
+	return dim, true, nil
 }
 
 // SetEmbeddingDimension records the embedding dimension in vec_meta.
 func SetEmbeddingDimension(ctx context.Context, db *store.DB, dim int) error {
+	return setEmbeddingDimension(ctx, db, dim)
+}
+
+func setEmbeddingDimension(ctx context.Context, db metaDB, dim int) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO vec_meta (key, value) VALUES ('embedding_dim', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -356,6 +525,17 @@ func dotProduct(a, b []float32) float32 {
 		sum += a[i] * b[i]
 	}
 	return sum
+}
+
+// isZeroVector reports whether every component of v is zero (or v is empty).
+// Embedders return the zero vector for inputs with no known tokens.
+func isZeroVector(v []float32) bool {
+	for _, x := range v {
+		if x != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // l2Normalize normalizes v to unit length in-place.
