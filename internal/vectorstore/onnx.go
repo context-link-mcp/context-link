@@ -255,6 +255,7 @@ func (e *ONNXEmbedder) initialize() error {
 // L2-normalized embedding. Must be called with e.mu held.
 func (e *ONNXEmbedder) inferOne(text string) ([]float32, error) {
 	out := e.tokenizer.Tokenize(text, MaxSeqLen)
+	logTruncated(out, text)
 
 	// Nothing the model knows (empty, or every word [UNK]): return the zero
 	// vector, as Model2Vec does, instead of a [CLS]/[UNK] embedding that
