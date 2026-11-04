@@ -17,6 +17,7 @@ func extractSymbolKeys(t *testing.T, adapter LanguageAdapter, code string) []str
 	t.Helper()
 	tree, err := NewParserPoolManager().GetPool(adapter).Parse(context.Background(), []byte(code))
 	require.NoError(t, err)
+	defer tree.Close()
 	syms, err := NewExtractor().ExtractSymbols(context.Background(), tree, []byte(code), adapter, "repo", "f")
 	require.NoError(t, err)
 	keys := make([]string, 0, len(syms))

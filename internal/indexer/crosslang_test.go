@@ -31,6 +31,7 @@ func TestCrossLanguage_SchemaConsistency(t *testing.T) {
 	poolMgr := NewParserPoolManager()
 	goTree, err := poolMgr.GetPool(goAdapter).Parse(ctx, goSource)
 	require.NoError(t, err)
+	defer goTree.Close()
 
 	extractor := NewExtractor()
 	goSymbols, err := extractor.ExtractSymbols(ctx, goTree, goSource, goAdapter, "go-repo", "sample.go")
@@ -44,6 +45,7 @@ func TestCrossLanguage_SchemaConsistency(t *testing.T) {
 
 	tsTree, err := poolMgr.GetPool(tsAdapter).Parse(ctx, tsSource)
 	require.NoError(t, err)
+	defer tsTree.Close()
 
 	tsSymbols, err := extractor.ExtractSymbols(ctx, tsTree, tsSource, tsAdapter, "ts-repo", "auth.ts")
 	require.NoError(t, err)
