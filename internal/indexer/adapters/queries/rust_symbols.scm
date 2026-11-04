@@ -44,6 +44,14 @@
   body: (declaration_list) @symbol.body
 ) @symbol.class
 
+; impl<T> Foo<T> { ... }
+(impl_item
+  type: (generic_type
+    type: (type_identifier) @symbol.name
+  )
+  body: (declaration_list) @symbol.body
+) @symbol.class
+
 ; === Type aliases ===
 ; type Foo = Bar;
 (type_item
@@ -53,14 +61,34 @@
 
 ; === Const items ===
 ; const FOO: i32 = 42;
-(const_item
-  name: (identifier) @symbol.name
-  value: (_) @symbol.body
-) @symbol.variable
+; Anchored to the crate root and to mod/impl/trait bodies (declaration_list):
+; a const or static inside a function body (block) is a local, not a symbol.
+(source_file
+  (const_item
+    name: (identifier) @symbol.name
+    value: (_) @symbol.body
+  ) @symbol.variable
+)
+
+(declaration_list
+  (const_item
+    name: (identifier) @symbol.name
+    value: (_) @symbol.body
+  ) @symbol.variable
+)
 
 ; === Static items ===
 ; static FOO: i32 = 42;
-(static_item
-  name: (identifier) @symbol.name
-  value: (_) @symbol.body
-) @symbol.variable
+(source_file
+  (static_item
+    name: (identifier) @symbol.name
+    value: (_) @symbol.body
+  ) @symbol.variable
+)
+
+(declaration_list
+  (static_item
+    name: (identifier) @symbol.name
+    value: (_) @symbol.body
+  ) @symbol.variable
+)

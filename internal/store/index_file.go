@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/context-link-mcp/context-link/pkg/models"
@@ -29,35 +30,8 @@ func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []mod
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// Callers in other files lose their edges into this file below; mark them
-	// for re-resolution in the same transaction (see markEdgeCallers).
-	if err := markEdgeCallers(ctx, tx, f.RepoName, f.Path); err != nil {
+	if err := deleteFileIndex(ctx, tx, f.RepoName, f.Path); err != nil {
 		return err
-	}
-
-	deletes := []struct {
-		what  string
-		query string
-		args  []any
-	}{
-		{"FTS entries", `DELETE FROM fts_symbols WHERE symbol_id IN (` + fileSymbolIDs + `)`,
-			[]any{f.RepoName, f.Path}},
-		{"embeddings", `DELETE FROM vec_symbols WHERE symbol_id IN (` + fileSymbolIDs + `)`,
-			[]any{f.RepoName, f.Path}},
-		{"dependencies", `DELETE FROM dependencies WHERE caller_id IN (` + fileSymbolIDs + `)
-			OR callee_id IN (` + fileSymbolIDs + `)`,
-			[]any{f.RepoName, f.Path, f.RepoName, f.Path}},
-		{"routes", `DELETE FROM routes WHERE repo_name = ? AND file_path = ? AND kind = 'definition'`,
-			[]any{f.RepoName, f.Path}},
-		{"call sites", `DELETE FROM call_sites WHERE repo_name = ? AND file_path = ?`,
-			[]any{f.RepoName, f.Path}},
-		{"symbols", `DELETE FROM symbols WHERE repo_name = ? AND file_path = ?`,
-			[]any{f.RepoName, f.Path}},
-	}
-	for _, d := range deletes {
-		if _, err := tx.ExecContext(ctx, d.query, d.args...); err != nil {
-			return fmt.Errorf("store: failed to delete old %s for %s/%s: %w", d.what, f.RepoName, f.Path, err)
-		}
 	}
 
 	if len(symbols) > 0 {
@@ -99,6 +73,71 @@ func ReplaceFileIndex(ctx context.Context, db *DB, f *models.File, symbols []mod
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: failed to commit file replace for %s/%s: %w", f.RepoName, f.Path, err)
+	}
+	return nil
+}
+
+// DeleteFileIndex atomically removes everything indexed for a file that no
+// longer exists: the same rows ReplaceFileIndex deletes (FTS rows, embeddings,
+// edges in both directions, route definitions, call sites, symbols), after
+// marking the other files with edges into it for re-resolution, and then its
+// file record. Either all of it is committed or none of it is, so a failure
+// leaves the file record for the next run to retry. Callers by name are marked
+// separately, see MarkNameCallers; memories must be snapshotted before.
+func DeleteFileIndex(ctx context.Context, db *DB, repoName, filePath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: failed to begin file delete for %s: %w", filePath, err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if err := deleteFileIndex(ctx, tx, repoName, filePath); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM files WHERE repo_name = ? AND path = ?`, repoName, filePath,
+	); err != nil {
+		return fmt.Errorf("store: failed to delete file record %s/%s: %w", repoName, filePath, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: failed to commit file delete for %s/%s: %w", repoName, filePath, err)
+	}
+	return nil
+}
+
+// deleteFileIndex deletes, inside tx, everything derived from one file except
+// its file record, after marking the other files with edges into it for
+// re-resolution (see markEdgeCallers). FTS rows are deleted explicitly: the
+// FTS5 table has no foreign key, so nothing else would remove them.
+func deleteFileIndex(ctx context.Context, tx *sql.Tx, repoName, filePath string) error {
+	if err := markEdgeCallers(ctx, tx, repoName, filePath); err != nil {
+		return err
+	}
+
+	deletes := []struct {
+		what  string
+		query string
+		args  []any
+	}{
+		{"FTS entries", `DELETE FROM fts_symbols WHERE symbol_id IN (` + fileSymbolIDs + `)`,
+			[]any{repoName, filePath}},
+		{"embeddings", `DELETE FROM vec_symbols WHERE symbol_id IN (` + fileSymbolIDs + `)`,
+			[]any{repoName, filePath}},
+		{"dependencies", `DELETE FROM dependencies WHERE caller_id IN (` + fileSymbolIDs + `)
+			OR callee_id IN (` + fileSymbolIDs + `)`,
+			[]any{repoName, filePath, repoName, filePath}},
+		{"routes", `DELETE FROM routes WHERE repo_name = ? AND file_path = ? AND kind = 'definition'`,
+			[]any{repoName, filePath}},
+		{"call sites", `DELETE FROM call_sites WHERE repo_name = ? AND file_path = ?`,
+			[]any{repoName, filePath}},
+		{"symbols", `DELETE FROM symbols WHERE repo_name = ? AND file_path = ?`,
+			[]any{repoName, filePath}},
+	}
+	for _, d := range deletes {
+		if _, err := tx.ExecContext(ctx, d.query, d.args...); err != nil {
+			return fmt.Errorf("store: failed to delete old %s for %s/%s: %w", d.what, repoName, filePath, err)
+		}
 	}
 	return nil
 }

@@ -50,6 +50,7 @@ type symbolCandidate struct {
 	family    string
 	isMethod  bool
 	container string
+	qualified string // qualified name; overloads in one file share it
 }
 
 // resolver resolves call sites against every symbol of a repo.
@@ -132,6 +133,7 @@ func newResolver(symbolsByFile map[string][]models.Symbol) *resolver {
 				family:    languageFamily(s.Language),
 				isMethod:  s.Kind == "method",
 				container: symbolContainer(s),
+				qualified: s.QualifiedName,
 			}
 			r.byName[s.Name] = append(r.byName[s.Name], c)
 			if s.QualifiedName != s.Name {
@@ -235,7 +237,7 @@ func (r *resolver) resolve(family, file, container string, site store.CallSite, 
 		// The rest of the repo, only for a unique name. Not for Go: a plain
 		// call there only reaches its own package (or a dot import, already
 		// in imported), and repo-unique names would catch builtins (min, max).
-		if cands = dedupeCandidates(cands); len(cands) == 1 && family != "go" {
+		if cands = collapseOverloads(dedupeCandidates(cands)); len(cands) == 1 && family != "go" {
 			return cands[0].id, true
 		}
 		return 0, false
@@ -295,9 +297,11 @@ func pickScoped(cands []symbolCandidate, container string, scopes ...func(symbol
 }
 
 // pickOne returns the only distinct candidate, or the only one in the
-// caller's container; anything else is ambiguous.
+// caller's container; anything else is ambiguous. Overloads (several symbols
+// with one qualified name in one file) count as one candidate: the first by
+// line, so the edge is deterministic.
 func pickOne(cands []symbolCandidate, container string) (int64, bool) {
-	cands = dedupeCandidates(cands)
+	cands = collapseOverloads(dedupeCandidates(cands))
 	if len(cands) == 1 {
 		return cands[0].id, true
 	}
@@ -319,6 +323,23 @@ func dedupeCandidates(cands []symbolCandidate) []symbolCandidate {
 	for _, c := range cands {
 		if !seen[c.id] {
 			seen[c.id] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// collapseOverloads keeps only the first of the candidates that share a file
+// and a qualified name (overloads, several Go init()), keeping order. The
+// candidates are ordered by file and line, so the first is the lowest line.
+func collapseOverloads(cands []symbolCandidate) []symbolCandidate {
+	type key struct{ file, qualified string }
+	seen := make(map[key]bool, len(cands))
+	out := cands[:0:0]
+	for _, c := range cands {
+		k := key{c.file, c.qualified}
+		if !seen[k] {
+			seen[k] = true
 			out = append(out, c)
 		}
 	}

@@ -44,12 +44,21 @@ func NewExtractor() *Extractor {
 
 // classLikeNodeTypes maps AST node types to the field name that holds the
 // class/struct/impl name. Used by resolveParentClass to walk up the tree.
+// Grammars without a name field (Kotlin) fall back to the node's first
+// type_identifier child, see containerNameNode.
 var classLikeNodeTypes = map[string]string{
-	"class_definition":  "name", // Python
-	"class_declaration": "name", // TypeScript, JavaScript, Java, C#
-	"impl_item":         "type", // Rust
-	"class_specifier":   "name", // C++
-	"struct_specifier":  "name", // C++
+	"class_definition":           "name", // Python
+	"class_declaration":          "name", // TypeScript, JavaScript, Java, C#, Swift; Kotlin (positional)
+	"abstract_class_declaration": "name", // TypeScript
+	"interface_declaration":      "name", // Java, C# (default methods)
+	"enum_declaration":           "name", // Java, C#
+	"record_declaration":         "name", // Java, C#
+	"struct_declaration":         "name", // C#
+	"object_declaration":         "name", // Kotlin (positional)
+	"impl_item":                  "type", // Rust
+	"trait_item":                 "name", // Rust (default methods)
+	"class_specifier":            "name", // C++
+	"struct_specifier":           "name", // C++
 }
 
 // resolveParentClass walks up the AST from node to find an enclosing class,
@@ -58,9 +67,8 @@ func resolveParentClass(node *sitter.Node, source []byte) (string, bool) {
 	current := node.Parent()
 	for current != nil {
 		if nameField, ok := classLikeNodeTypes[current.Type()]; ok {
-			nameNode := current.ChildByFieldName(nameField)
-			if nameNode != nil {
-				if content, ok := safeNodeContent(nameNode, source); ok && content != "" {
+			if nameNode := containerNameNode(current, nameField); nameNode != nil {
+				if content := typeName(nameNode, source); content != "" {
 					return content, true
 				}
 			}
@@ -70,8 +78,63 @@ func resolveParentClass(node *sitter.Node, source []byte) (string, bool) {
 	return "", false
 }
 
+// containerNameNode returns the node holding a container's name: its
+// nameField child, or for grammars that expose no fields (Kotlin), its first
+// type_identifier child.
+func containerNameNode(container *sitter.Node, nameField string) *sitter.Node {
+	if n := container.ChildByFieldName(nameField); n != nil {
+		return n
+	}
+	for i := 0; i < int(container.NamedChildCount()); i++ {
+		if c := container.NamedChild(i); c.Type() == "type_identifier" {
+			return c
+		}
+	}
+	return nil
+}
+
+// typeName returns the bare name of a type node, without pointer, type
+// arguments or path: *Cache[K, V] (Go), Foo<T> and a::Foo (Rust) all give the
+// last plain type name ("Cache", "Foo").
+func typeName(node *sitter.Node, source []byte) string {
+	for node != nil {
+		switch node.Type() {
+		case "pointer_type", "reference_type":
+			if node.NamedChildCount() == 0 {
+				return ""
+			}
+			node = node.NamedChild(int(node.NamedChildCount()) - 1)
+			continue
+		case "generic_type":
+			if t := node.ChildByFieldName("type"); t != nil {
+				node = t
+				continue
+			}
+		case "scoped_type_identifier":
+			if n := node.ChildByFieldName("name"); n != nil {
+				node = n
+				continue
+			}
+		}
+		break
+	}
+	if node == nil {
+		return ""
+	}
+	content, ok := safeNodeContent(node, source)
+	if !ok {
+		return ""
+	}
+	// Grammars that don't split type arguments into their own node.
+	if i := strings.IndexAny(content, "[<"); i >= 0 {
+		content = content[:i]
+	}
+	return strings.TrimSpace(content)
+}
+
 // resolveGoReceiver extracts the receiver type from a Go method_declaration node.
-// For example, `func (c *Cache) Get()` returns "Cache".
+// For example, `func (c *Cache) Get()` and `func (c *Cache[K, V]) Get()` both
+// return "Cache".
 func resolveGoReceiver(node *sitter.Node, source []byte) (string, bool) {
 	if node.Type() != "method_declaration" {
 		return "", false
@@ -87,11 +150,8 @@ func resolveGoReceiver(node *sitter.Node, source []byte) (string, bool) {
 		if typeNode == nil {
 			continue
 		}
-		// Unwrap pointer_type: *Foo → Foo
-		if typeNode.Type() == "pointer_type" && typeNode.NamedChildCount() > 0 {
-			typeNode = typeNode.NamedChild(0)
-		}
-		if content, ok := safeNodeContent(typeNode, source); ok && content != "" {
+		// *Foo, Foo[K, V] and *Foo[K, V] are all methods of Foo.
+		if content := typeName(typeNode, source); content != "" {
 			return content, true
 		}
 	}
@@ -128,7 +188,7 @@ func (e *Extractor) ExtractSymbols(
 		name      string
 		startLine int
 	}
-	seen := make(map[symKey]bool)
+	seen := make(map[symKey]int) // key → index in symbols
 
 	for {
 		match, ok := cursor.NextMatch()
@@ -147,10 +207,16 @@ func (e *Extractor) ExtractSymbols(
 		sym := e.processSymbolMatch(query, match, source, adapter, repoName, filePath)
 		if sym != nil {
 			key := symKey{name: sym.QualifiedName, startLine: sym.StartLine}
-			if seen[key] {
+			if i, dup := seen[key]; dup {
+				// A generic pattern (exported variable) and a specific one
+				// (exported arrow function) can match the same declaration;
+				// keep the specific kind whichever match comes first.
+				if symbols[i].Kind == "variable" && sym.Kind != "variable" {
+					symbols[i] = *sym
+				}
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(symbols)
 			symbols = append(symbols, *sym)
 		}
 	}
