@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/context-link-mcp/context-link/pkg/models"
@@ -12,6 +13,17 @@ import (
 
 // ErrSymbolNotFound is returned when a symbol record is not found.
 var ErrSymbolNotFound = errors.New("symbol not found")
+
+// ErrAmbiguousSymbol is returned by ResolveSymbol when a name matches no
+// symbol exactly and several distinct symbols by substring.
+var ErrAmbiguousSymbol = errors.New("ambiguous symbol name")
+
+// ErrEmptySymbolName is returned by ResolveSymbol for an empty or blank name.
+var ErrEmptySymbolName = errors.New("symbol name is empty")
+
+// maxSymbolCandidates is the number of substring matches ResolveSymbol
+// reports as suggestions when a name does not resolve.
+const maxSymbolCandidates = 5
 
 // GetSymbolByID retrieves a symbol by its primary key.
 func GetSymbolByID(ctx context.Context, db *DB, id int64) (*models.Symbol, error) {
@@ -54,29 +66,36 @@ func GetSymbolByQualifiedName(ctx context.Context, db *DB, repoName, qualifiedNa
 	return scanSymbol(row)
 }
 
-// SearchSymbolsByName performs a fuzzy search on symbol names using LIKE.
+// SearchSymbolsByName returns symbols whose name or qualified name contains
+// pattern as a literal substring (ASCII case-insensitive; LIKE wildcards in
+// pattern are matched literally). Exact matches rank first, then prefix
+// matches. An empty or blank pattern returns no symbols.
 func SearchSymbolsByName(ctx context.Context, db *DB, repoName, pattern string, limit int) ([]models.Symbol, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	if strings.TrimSpace(pattern) == "" {
+		return nil, nil
+	}
+	contains := "%" + EscapeLike(pattern) + "%"
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, repo_name, name, qualified_name, kind, file_path,
 		        content_hash, code_block, start_line, end_line, language, indexed_at
 		 FROM symbols
-		 WHERE repo_name = ? AND (name LIKE ? OR qualified_name LIKE ?)
+		 WHERE repo_name = ? AND (name LIKE ? ESCAPE '\' OR qualified_name LIKE ? ESCAPE '\')
 		 ORDER BY
 		   CASE WHEN name = ? THEN 0
 		        WHEN qualified_name = ? THEN 1
-		        WHEN name LIKE ? THEN 2
+		        WHEN name LIKE ? ESCAPE '\' THEN 2
 		        ELSE 3
 		   END,
 		   file_path, start_line, id
 		 LIMIT ?`,
 		repoName,
-		"%"+pattern+"%", "%"+pattern+"%",
+		contains, contains,
 		pattern, pattern,
-		pattern+"%",
+		EscapeLike(pattern)+"%",
 		limit,
 	)
 	if err != nil {
@@ -189,48 +208,91 @@ func GetSymbolNameIndex(ctx context.Context, db *DB, repoName string) (map[strin
 	return index, rows.Err()
 }
 
-// ResolveSymbol looks up a symbol by name using a cascading strategy:
-// exact name match → qualified name match → fuzzy search.
-// Returns ErrSymbolNotFound if no match is found.
-func ResolveSymbol(ctx context.Context, db *DB, repoName, name string) (*models.Symbol, error) {
-	sym, err := GetSymbolByName(ctx, db, repoName, name)
-	if err != nil {
-		sym, err = GetSymbolByQualifiedName(ctx, db, repoName, name)
-	}
-	if err != nil {
-		results, searchErr := SearchSymbolsByName(ctx, db, repoName, name, 1)
-		if searchErr != nil || len(results) == 0 {
-			return nil, ErrSymbolNotFound
-		}
-		sym = &results[0]
-	}
-	return sym, nil
+// SymbolResolution is the outcome of ResolveSymbol.
+type SymbolResolution struct {
+	// Symbol is the resolved symbol; nil when the lookup failed.
+	Symbol *models.Symbol
+	// Fuzzy is true when Symbol was found by a substring match because no
+	// symbol has the requested name or qualified name.
+	Fuzzy bool
+	// Candidates holds up to five substring matches when the name did not
+	// resolve (ErrSymbolNotFound or ErrAmbiguousSymbol), as suggestions.
+	Candidates []models.Symbol
 }
 
-// GetSymbolWithDependencies retrieves a symbol and its direct dependencies
-// (1-hop). Returns the symbol, its dependencies, and their import statements.
+// ResolveSymbol looks up a symbol by name: exact name first, then exact
+// qualified name. When neither exists and allowFuzzy is true, a substring
+// match is used only if every matching symbol shares one qualified name
+// (Fuzzy is then set); several distinct matches return ErrAmbiguousSymbol with
+// Candidates. With allowFuzzy false a substring match never resolves; its
+// matches are returned as Candidates of ErrSymbolNotFound. A blank name
+// returns ErrEmptySymbolName. Database failures are returned wrapped, never as
+// ErrSymbolNotFound.
+func ResolveSymbol(ctx context.Context, db *DB, repoName, name string, allowFuzzy bool) (SymbolResolution, error) {
+	if strings.TrimSpace(name) == "" {
+		return SymbolResolution{}, ErrEmptySymbolName
+	}
+
+	sym, err := GetSymbolByName(ctx, db, repoName, name)
+	if err == nil {
+		return SymbolResolution{Symbol: sym}, nil
+	}
+	if !errors.Is(err, ErrSymbolNotFound) {
+		return SymbolResolution{}, err
+	}
+	sym, err = GetSymbolByQualifiedName(ctx, db, repoName, name)
+	if err == nil {
+		return SymbolResolution{Symbol: sym}, nil
+	}
+	if !errors.Is(err, ErrSymbolNotFound) {
+		return SymbolResolution{}, err
+	}
+
+	candidates, err := SearchSymbolsByName(ctx, db, repoName, name, maxSymbolCandidates)
+	if err != nil {
+		return SymbolResolution{}, err
+	}
+	if len(candidates) == 0 {
+		return SymbolResolution{}, ErrSymbolNotFound
+	}
+	if !allowFuzzy {
+		return SymbolResolution{Candidates: candidates}, ErrSymbolNotFound
+	}
+
+	var distinct int
+	contains := "%" + EscapeLike(name) + "%"
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT qualified_name) FROM symbols
+		 WHERE repo_name = ? AND (name LIKE ? ESCAPE '\' OR qualified_name LIKE ? ESCAPE '\')`,
+		repoName, contains, contains,
+	).Scan(&distinct); err != nil {
+		return SymbolResolution{}, fmt.Errorf("store: failed to count symbol matches for %q: %w", name, err)
+	}
+	if distinct != 1 {
+		return SymbolResolution{Candidates: candidates}, ErrAmbiguousSymbol
+	}
+	return SymbolResolution{Symbol: &candidates[0], Fuzzy: true}, nil
+}
+
+// GetSymbolWithDependencies retrieves a symbol by exact name or qualified name
+// and its dependencies up to depth hops (none when depth <= 0). It never
+// resolves a name by substring; see ResolveSymbol.
 func GetSymbolWithDependencies(ctx context.Context, db *DB, repoName, symbolName string, depth int) (*models.Symbol, []models.Symbol, error) {
-	sym, err := ResolveSymbol(ctx, db, repoName, symbolName)
+	res, err := ResolveSymbol(ctx, db, repoName, symbolName, false)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	if depth <= 0 {
-		return sym, nil, nil
-	}
-
-	// Get transitive dependencies via BFS up to requested depth.
-	deps, err := getTransitiveDependencies(ctx, db, sym.ID, depth)
+	deps, err := GetTransitiveDependencies(ctx, db, res.Symbol.ID, depth)
 	if err != nil {
-		return sym, nil, nil // non-fatal
+		return nil, nil, err
 	}
-
-	return sym, deps, nil
+	return res.Symbol, deps, nil
 }
 
-// getTransitiveDependencies performs BFS traversal of the dependency graph
-// up to maxDepth hops, returning all reachable symbols without duplicates.
-func getTransitiveDependencies(ctx context.Context, db *DB, symbolID int64, maxDepth int) ([]models.Symbol, error) {
+// GetTransitiveDependencies performs a BFS of the dependency graph from
+// symbolID up to maxDepth hops and returns every reachable callee once, in
+// BFS order (within a level by file path and start line).
+func GetTransitiveDependencies(ctx context.Context, db *DB, symbolID int64, maxDepth int) ([]models.Symbol, error) {
 	if maxDepth <= 0 {
 		return nil, nil
 	}
@@ -240,36 +302,34 @@ func getTransitiveDependencies(ctx context.Context, db *DB, symbolID int64, maxD
 	frontier := []int64{symbolID}
 
 	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
-		// Batch query: fetch all dependencies for the entire frontier at once.
-		placeholders := make([]string, len(frontier))
-		args := make([]any, len(frontier))
-		for i, id := range frontier {
-			placeholders[i] = "?"
-			args[i] = id
-		}
-
-		query := fmt.Sprintf(
-			`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
-			        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
-			 FROM dependencies d
-			 JOIN symbols s ON s.id = d.callee_id
-			 WHERE d.caller_id IN (%s)`,
-			strings.Join(placeholders, ","),
-		)
-
-		rows, err := db.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, fmt.Errorf("store: failed to get batch dependencies: %w", err)
-		}
-
-		syms, err := scanSymbols(rows)
-		rows.Close()
+		var level []models.Symbol
+		err := forEachIDChunk(frontier, 0, func(chunk []int64) error {
+			rows, err := db.QueryContext(ctx,
+				`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+				        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
+				 FROM dependencies d
+				 JOIN symbols s ON s.id = d.callee_id
+				 WHERE d.caller_id IN (`+placeholders(len(chunk))+`)`,
+				idArgs(chunk)...,
+			)
+			if err != nil {
+				return fmt.Errorf("store: failed to get batch dependencies: %w", err)
+			}
+			defer rows.Close()
+			syms, err := scanSymbols(rows)
+			if err != nil {
+				return err
+			}
+			level = append(level, syms...)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
+		sortSymbols(level)
 
 		var nextFrontier []int64
-		for _, s := range syms {
+		for _, s := range level {
 			if seen[s.ID] {
 				continue
 			}
@@ -284,72 +344,49 @@ func getTransitiveDependencies(ctx context.Context, db *DB, symbolID int64, maxD
 	return result, nil
 }
 
-// GetImportsForFile returns all import dependency sources for a file's symbols.
-func GetImportsForFile(ctx context.Context, db *DB, repoName, filePath string) ([]string, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT DISTINCT d.kind
-		 FROM dependencies d
-		 JOIN symbols s ON s.id = d.caller_id
-		 WHERE s.repo_name = ? AND s.file_path = ? AND d.kind = 'import'`,
-		repoName, filePath,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get imports for %s: %w", filePath, err)
-	}
-	defer rows.Close()
-
-	var imports []string
-	for rows.Next() {
-		var imp string
-		if err := rows.Scan(&imp); err != nil {
-			return nil, fmt.Errorf("store: failed to scan import row: %w", err)
+// sortSymbols orders symbols by file path, start line, then ID.
+func sortSymbols(syms []models.Symbol) {
+	sort.SliceStable(syms, func(i, j int) bool {
+		a, b := syms[i], syms[j]
+		if a.FilePath != b.FilePath {
+			return a.FilePath < b.FilePath
 		}
-		imports = append(imports, imp)
-	}
-	return imports, rows.Err()
+		if a.StartLine != b.StartLine {
+			return a.StartLine < b.StartLine
+		}
+		return a.ID < b.ID
+	})
 }
 
 // GetSymbolsByIDs returns symbols by their IDs within a repo, keyed by ID.
-// Used to batch-fetch symbol metadata for KNN search results.
+// Used to batch-fetch symbol metadata for KNN search results. Any number of
+// IDs is accepted; they are queried in chunks.
 func GetSymbolsByIDs(ctx context.Context, db *DB, repoName string, ids []int64) (map[int64]models.Symbol, error) {
-	if len(ids) == 0 {
-		return make(map[int64]models.Symbol), nil
-	}
-
-	// Build parameterized IN clause.
-	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, repoName)
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-
-	query := fmt.Sprintf(
-		`SELECT id, repo_name, name, qualified_name, kind, file_path,
-		        content_hash, code_block, start_line, end_line, language, indexed_at
-		 FROM symbols WHERE repo_name = ? AND id IN (%s)`,
-		strings.Join(placeholders, ","),
-	)
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get symbols by IDs: %w", err)
-	}
-	defer rows.Close()
-
 	result := make(map[int64]models.Symbol, len(ids))
-	for rows.Next() {
-		var s models.Symbol
-		if err := rows.Scan(
-			&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
-			&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
-		); err != nil {
-			return nil, fmt.Errorf("store: failed to scan symbol row: %w", err)
+	err := forEachIDChunk(ids, 0, func(chunk []int64) error {
+		rows, err := db.QueryContext(ctx,
+			`SELECT id, repo_name, name, qualified_name, kind, file_path,
+			        content_hash, code_block, start_line, end_line, language, indexed_at
+			 FROM symbols WHERE repo_name = ? AND id IN (`+placeholders(len(chunk))+`)`,
+			idArgs(chunk, repoName)...,
+		)
+		if err != nil {
+			return fmt.Errorf("store: failed to get symbols by IDs: %w", err)
 		}
-		result[s.ID] = s
+		defer rows.Close()
+		syms, err := scanSymbols(rows)
+		if err != nil {
+			return err
+		}
+		for _, s := range syms {
+			result[s.ID] = s
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // GetSymbolsByRepo returns all symbols for a repo, grouped by file path.
@@ -388,12 +425,18 @@ type CallTreeEdge struct {
 	DependencyKind string
 }
 
+// MaxCallTreeEdges caps the number of edges GetCallTree returns.
+const MaxCallTreeEdges = 100
+
 // GetCallTree performs BFS traversal of the dependency graph from a root symbol.
 // direction must be "callees" (forward: what does this call?) or "callers" (reverse: what calls this?).
-// Returns a flat list of edges with depth levels. Hard-capped at 100 edges.
-func GetCallTree(ctx context.Context, db *DB, symbolID int64, direction string, maxDepth int) ([]CallTreeEdge, error) {
+// Returns a flat list of edges with depth levels, each symbol once (at its
+// lowest depth; within a depth by file path and start line), only symbols of
+// repoName, and at most MaxCallTreeEdges edges. truncated reports whether the
+// cap dropped reachable symbols. maxDepth is clamped to 3.
+func GetCallTree(ctx context.Context, db *DB, repoName string, symbolID int64, direction string, maxDepth int) (edges []CallTreeEdge, truncated bool, err error) {
 	if maxDepth <= 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if maxDepth > 3 {
 		maxDepth = 3
@@ -409,66 +452,85 @@ func GetCallTree(ctx context.Context, db *DB, symbolID int64, direction string, 
 		targetCol = "callee_id"
 	}
 
-	const maxEdges = 100
 	seen := map[int64]bool{symbolID: true}
 	var result []CallTreeEdge
 	frontier := []int64{symbolID}
 
-	for depth := 1; depth <= maxDepth && len(frontier) > 0 && len(result) < maxEdges; depth++ {
-		placeholders := make([]string, len(frontier))
-		args := make([]any, len(frontier))
-		for i, id := range frontier {
-			placeholders[i] = "?"
-			args[i] = id
-		}
-
-		query := fmt.Sprintf(
-			`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
-			        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at,
-			        d.kind
-			 FROM dependencies d
-			 JOIN symbols s ON s.id = d.%s
-			 WHERE d.%s IN (%s)`,
-			targetCol, frontierCol, strings.Join(placeholders, ","),
-		)
-
-		rows, err := db.QueryContext(ctx, query, args...)
+	// Collect one edge past the cap, so truncation is reported exactly.
+	for depth := 1; depth <= maxDepth && len(frontier) > 0 && len(result) <= MaxCallTreeEdges; depth++ {
+		var level []CallTreeEdge
+		err := forEachIDChunk(frontier, 0, func(chunk []int64) error {
+			query := fmt.Sprintf(
+				`SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
+				        s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at,
+				        d.kind
+				 FROM dependencies d
+				 JOIN symbols s ON s.id = d.%s
+				 WHERE d.%s IN (%s) AND s.repo_name = ?`,
+				targetCol, frontierCol, placeholders(len(chunk)),
+			)
+			args := idArgs(chunk)
+			args = append(args, repoName)
+			rows, err := db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("store: failed to get call tree edges: %w", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var e CallTreeEdge
+				s := &e.Symbol
+				if err := rows.Scan(
+					&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
+					&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
+					&e.DependencyKind,
+				); err != nil {
+					return fmt.Errorf("store: failed to scan call tree row: %w", err)
+				}
+				e.Depth = depth
+				level = append(level, e)
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("store: failed to read call tree rows: %w", err)
+			}
+			return nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("store: failed to get call tree edges: %w", err)
+			return nil, false, err
 		}
+
+		sort.SliceStable(level, func(i, j int) bool {
+			a, b := level[i].Symbol, level[j].Symbol
+			if a.FilePath != b.FilePath {
+				return a.FilePath < b.FilePath
+			}
+			if a.StartLine != b.StartLine {
+				return a.StartLine < b.StartLine
+			}
+			if a.ID != b.ID {
+				return a.ID < b.ID
+			}
+			return level[i].DependencyKind < level[j].DependencyKind
+		})
 
 		var nextFrontier []int64
-		for rows.Next() {
-			var s models.Symbol
-			var depKind string
-			if err := rows.Scan(
-				&s.ID, &s.RepoName, &s.Name, &s.QualifiedName, &s.Kind, &s.FilePath,
-				&s.ContentHash, &s.CodeBlock, &s.StartLine, &s.EndLine, &s.Language, &s.IndexedAt,
-				&depKind,
-			); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("store: failed to scan call tree row: %w", err)
-			}
-			if seen[s.ID] {
+		for _, e := range level {
+			if seen[e.Symbol.ID] {
 				continue
 			}
-			seen[s.ID] = true
-			result = append(result, CallTreeEdge{
-				Depth:          depth,
-				Symbol:         s,
-				DependencyKind: depKind,
-			})
-			nextFrontier = append(nextFrontier, s.ID)
-			if len(result) >= maxEdges {
+			seen[e.Symbol.ID] = true
+			result = append(result, e)
+			nextFrontier = append(nextFrontier, e.Symbol.ID)
+			if len(result) > MaxCallTreeEdges {
 				break
 			}
 		}
-		rows.Close()
-
 		frontier = nextFrontier
 	}
 
-	return result, nil
+	if len(result) > MaxCallTreeEdges {
+		return result[:MaxCallTreeEdges], true, nil
+	}
+	return result, false, nil
 }
 
 // DeadCodeOptions controls filtering for FindDeadSymbols.
@@ -597,134 +659,79 @@ func GetSymbolsByFileAndLines(ctx context.Context, db *DB, repoName, filePath st
 	return scanSymbols(rows)
 }
 
-// SearchCodePatterns searches for symbols whose code_block matches a pattern.
-// Uses SQL LIKE for initial filtering, returning candidates for Go-side regex matching.
-// This reduces memory usage by not pulling all symbols into Go for pattern matching.
-// limit defaults to 50, max 200.
-func SearchCodePatterns(ctx context.Context, db *DB, repoName string, likePattern string, filePathPrefix string, kindFilter string, limit int) ([]models.Symbol, error) {
+// CodePatternFilter narrows the candidates of SearchCodePatterns.
+type CodePatternFilter struct {
+	// Literals must each occur in the code block (ASCII case-insensitive,
+	// LIKE wildcards matched literally). Callers pass only substrings that
+	// every regex match must contain, so the prefilter never drops a match.
+	Literals []string
+	// FilePathPrefix keeps symbols whose file path starts with it (literal).
+	FilePathPrefix string
+	// Kind keeps symbols of this kind.
+	Kind string
+}
+
+// SymbolCursor is a position in (file_path, start_line, id) order, used to
+// page through SearchCodePatterns.
+type SymbolCursor struct {
+	FilePath  string
+	StartLine int
+	ID        int64
+}
+
+// CursorAfter returns the cursor positioned just after s.
+func CursorAfter(s models.Symbol) *SymbolCursor {
+	return &SymbolCursor{FilePath: s.FilePath, StartLine: s.StartLine, ID: s.ID}
+}
+
+// maxCodePatternPage caps one SearchCodePatterns page.
+const maxCodePatternPage = 1000
+
+// SearchCodePatterns returns one page of candidate symbols for Go-side regex
+// matching: symbols of repoName passing filter, ordered by file path, start
+// line and ID, after the cursor (from the start when nil). limit defaults to
+// 50 and is capped at 1000; page with CursorAfter(last result) until a page
+// comes back shorter than limit.
+func SearchCodePatterns(ctx context.Context, db *DB, repoName string, filter CodePatternFilter, after *SymbolCursor, limit int) ([]models.Symbol, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	if limit > 200 {
-		limit = 200
+	if limit > maxCodePatternPage {
+		limit = maxCodePatternPage
 	}
 
-	// Build query with LIKE prefiltering for efficiency.
-	query := `
-		SELECT id, repo_name, name, qualified_name, kind, file_path,
+	var b strings.Builder
+	b.WriteString(`SELECT id, repo_name, name, qualified_name, kind, file_path,
 		       content_hash, code_block, start_line, end_line, language, indexed_at
 		FROM symbols
-		WHERE repo_name = ? AND code_block LIKE ?
-	`
-	args := []any{repoName, "%" + likePattern + "%"}
+		WHERE repo_name = ?`)
+	args := []any{repoName}
 
-	// Optional file path prefix filter.
-	if filePathPrefix != "" {
-		query += " AND file_path LIKE ?"
-		args = append(args, filePathPrefix+"%")
+	for _, lit := range filter.Literals {
+		if lit == "" {
+			continue
+		}
+		b.WriteString(` AND code_block LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+EscapeLike(lit)+"%")
 	}
-
-	// Optional kind filter.
-	if kindFilter != "" {
-		query += " AND kind = ?"
-		args = append(args, kindFilter)
+	if filter.FilePathPrefix != "" {
+		b.WriteString(` AND substr(file_path, 1, length(?)) = ?`)
+		args = append(args, filter.FilePathPrefix, filter.FilePathPrefix)
 	}
-
-	query += " ORDER BY file_path, start_line LIMIT ?"
+	if filter.Kind != "" {
+		b.WriteString(` AND kind = ?`)
+		args = append(args, filter.Kind)
+	}
+	if after != nil {
+		b.WriteString(` AND (file_path, start_line, id) > (?, ?, ?)`)
+		args = append(args, after.FilePath, after.StartLine, after.ID)
+	}
+	b.WriteString(` ORDER BY file_path, start_line, id LIMIT ?`)
 	args = append(args, limit)
 
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := db.QueryContext(ctx, b.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to search code patterns: %w", err)
-	}
-	defer rows.Close()
-
-	return scanSymbols(rows)
-}
-
-// GetTestsForSymbol finds test functions that call the target symbol.
-// Uses the dependency graph to discover tests with proven call relationships.
-func GetTestsForSymbol(ctx context.Context, db *DB, repoName, symbolName string) ([]models.Symbol, error) {
-	// Resolve the target symbol first.
-	target, err := ResolveSymbol(ctx, db, repoName, symbolName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Query reverse dependencies (callers) that are in test files.
-	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, s.repo_name, s.name, s.qualified_name, s.kind, s.file_path,
-		       s.content_hash, s.code_block, s.start_line, s.end_line, s.language, s.indexed_at
-		FROM dependencies d
-		JOIN symbols s ON d.caller_id = s.id
-		WHERE d.callee_id = ?
-		  AND s.repo_name = ?
-		  AND s.kind IN ('function', 'method')
-		  AND (
-			  s.file_path LIKE '%_test.go'
-			  OR s.file_path LIKE '%test_%'
-			  OR s.file_path LIKE '%.test.ts'
-			  OR s.file_path LIKE '%.test.tsx'
-			  OR s.file_path LIKE '%.test.js'
-			  OR s.file_path LIKE '%.test.jsx'
-			  OR s.file_path LIKE '%.spec.ts'
-			  OR s.file_path LIKE '%.spec.tsx'
-			  OR s.file_path LIKE '%.spec.js'
-			  OR s.file_path LIKE '%.spec.jsx'
-			  OR s.file_path LIKE '%/tests/%'
-			  OR s.file_path LIKE '%/test/%'
-			  OR s.file_path LIKE '%/__tests__/%'
-			  OR s.file_path LIKE '%_spec.rb'
-			  OR s.name LIKE 'test_%'
-			  OR s.name LIKE 'Test%'
-		  )
-		ORDER BY s.file_path, s.start_line
-	`, target.ID, repoName)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get tests for symbol: %w", err)
-	}
-	defer rows.Close()
-
-	return scanSymbols(rows)
-}
-
-// GetTestsByNameHeuristic finds test functions whose names contain the target symbol name.
-// This is a fallback when dependency-based discovery returns no results.
-func GetTestsByNameHeuristic(ctx context.Context, db *DB, repoName, symbolName string) ([]models.Symbol, error) {
-	// Extract base name: "OrderService.ProcessOrder" → "ProcessOrder"
-	baseName := symbolName
-	if idx := strings.LastIndex(symbolName, "."); idx != -1 {
-		baseName = symbolName[idx+1:]
-	}
-
-	// Search for test functions whose name contains the base name (case-insensitive).
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, repo_name, name, qualified_name, kind, file_path,
-		       content_hash, code_block, start_line, end_line, language, indexed_at
-		FROM symbols
-		WHERE repo_name = ?
-		  AND kind IN ('function', 'method')
-		  AND (
-			  file_path LIKE '%_test.go'
-			  OR file_path LIKE '%test_%'
-			  OR file_path LIKE '%.test.ts'
-			  OR file_path LIKE '%.test.tsx'
-			  OR file_path LIKE '%.test.js'
-			  OR file_path LIKE '%.test.jsx'
-			  OR file_path LIKE '%.spec.ts'
-			  OR file_path LIKE '%.spec.tsx'
-			  OR file_path LIKE '%.spec.js'
-			  OR file_path LIKE '%.spec.jsx'
-			  OR file_path LIKE '%/tests/%'
-			  OR file_path LIKE '%/test/%'
-			  OR file_path LIKE '%/__tests__/%'
-			  OR file_path LIKE '%_spec.rb'
-		  )
-		  AND LOWER(name) LIKE '%' || LOWER(?) || '%'
-		ORDER BY file_path, start_line
-	`, repoName, baseName)
-	if err != nil {
-		return nil, fmt.Errorf("store: failed to get tests by name heuristic: %w", err)
 	}
 	defer rows.Close()
 
@@ -762,4 +769,3 @@ func scanSymbols(rows *sql.Rows) ([]models.Symbol, error) {
 	}
 	return symbols, rows.Err()
 }
-

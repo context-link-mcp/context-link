@@ -17,7 +17,12 @@ import (
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
-// IndexStats reports the results of an indexing run.
+// IndexStats reports the results of an indexing run. FilesSkipped counts
+// discovered files that were neither indexed nor unchanged (they failed).
+// SymbolsRemoved counts symbols the run deleted: those of deleted files and
+// the previous symbols of re-indexed files (replaced ones included, as
+// SymbolsExtracted counts their replacements). SymbolsTotal is the repo's
+// symbol count after the run.
 type IndexStats struct {
 	FilesDiscovered     int            `json:"files_discovered"`
 	FilesIndexed        int            `json:"files_indexed"`
@@ -25,6 +30,8 @@ type IndexStats struct {
 	FilesUnchanged      int            `json:"files_unchanged"`
 	FilesDeleted        int            `json:"files_deleted"`
 	SymbolsExtracted    int            `json:"symbols_extracted"`
+	SymbolsRemoved      int            `json:"symbols_removed"`
+	SymbolsTotal        int            `json:"symbols_total"`
 	DepsExtracted       int            `json:"deps_extracted"`
 	DepsResolved        int            `json:"deps_resolved"`
 	RoutesExtracted     int            `json:"routes_extracted"`
@@ -142,6 +149,11 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 	stats := &IndexStats{}
 
 	idx.repoRoot = repoRoot
+
+	symbolsBefore, err := store.CountSymbols(ctx, idx.db, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("indexer: failed to count symbols: %w", err)
+	}
 
 	slog.Info("indexer: starting indexing", "repo", repoName, "root", repoRoot)
 
@@ -301,10 +313,16 @@ func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*
 		return nil, fmt.Errorf("indexer: failed to commit file hashes: %w", err)
 	}
 
-	stats.FilesSkipped = stats.FilesDiscovered - stats.FilesIndexed - stats.FilesUnchanged - stats.FilesDeleted
-	if stats.FilesSkipped < 0 {
-		stats.FilesSkipped = 0
+	// Deleted files are not among the discovered ones, so only indexed and
+	// unchanged files are subtracted: the rest failed to parse or store.
+	stats.FilesSkipped = max(stats.FilesDiscovered-stats.FilesIndexed-stats.FilesUnchanged, 0)
+
+	symbolsAfter, err := store.CountSymbols(ctx, idx.db, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("indexer: failed to count symbols: %w", err)
 	}
+	stats.SymbolsTotal = int(symbolsAfter)
+	stats.SymbolsRemoved = max(int(symbolsBefore)+stats.SymbolsExtracted-int(symbolsAfter), 0)
 	stats.Duration = time.Since(start)
 
 	slog.Info("indexer: indexing complete",

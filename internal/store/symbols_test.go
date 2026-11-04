@@ -288,7 +288,7 @@ func TestSearchCodePatterns_BasicMatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for "db.query" pattern
-	results, err := SearchCodePatterns(ctx, db, "repo", "db.query", "", "", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"db.query"}, FilePathPrefix: "", Kind: ""}, nil, 50)
 	require.NoError(t, err)
 	assert.Len(t, results, 2, "should match functions with db.query")
 }
@@ -316,7 +316,7 @@ func TestSearchCodePatterns_FilePrefix(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search with file path prefix filter
-	results, err := SearchCodePatterns(ctx, db, "repo", "function", "src/auth", "", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"function"}, FilePathPrefix: "src/auth", Kind: ""}, nil, 50)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "authFunc", results[0].Name)
@@ -345,7 +345,7 @@ func TestSearchCodePatterns_KindFilter(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for "constructor" pattern but filter by kind=class
-	results, err := SearchCodePatterns(ctx, db, "repo", "constructor", "", "class", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"constructor"}, FilePathPrefix: "", Kind: "class"}, nil, 50)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "MyClass", results[0].Name)
@@ -380,7 +380,7 @@ func TestSearchCodePatterns_CombinedFilters(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search with all filters: pattern + file prefix + kind
-	results, err := SearchCodePatterns(ctx, db, "repo", "authenticate", "src/auth", "function", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"authenticate"}, FilePathPrefix: "src/auth", Kind: "function"}, nil, 50)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "authHandler", results[0].Name)
@@ -405,7 +405,7 @@ func TestSearchCodePatterns_LimitDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search with default limit (0 should use 50)
-	results, err := SearchCodePatterns(ctx, db, "repo", "return true", "", "", 0)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"return true"}, FilePathPrefix: "", Kind: ""}, nil, 0)
 	require.NoError(t, err)
 	assert.Len(t, results, 50, "default limit should be 50")
 }
@@ -428,10 +428,10 @@ func TestSearchCodePatterns_LimitMax(t *testing.T) {
 	err := BatchInsertSymbols(ctx, db, symbols)
 	require.NoError(t, err)
 
-	// Search with limit > 200 (should cap at 200)
-	results, err := SearchCodePatterns(ctx, db, "repo", "return true", "", "", 500)
+	// A page is capped at 1000 symbols; all 250 fit.
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"return true"}, FilePathPrefix: "", Kind: ""}, nil, 5000)
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(results), 200, "limit should cap at 200")
+	assert.Len(t, results, 250)
 }
 
 func TestSearchCodePatterns_NoResults(t *testing.T) {
@@ -451,7 +451,7 @@ func TestSearchCodePatterns_NoResults(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for non-existent pattern
-	results, err := SearchCodePatterns(ctx, db, "repo", "nonexistent_pattern_xyz", "", "", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"nonexistent_pattern_xyz"}, FilePathPrefix: "", Kind: ""}, nil, 50)
 	require.NoError(t, err)
 	assert.Empty(t, results)
 }
@@ -479,7 +479,7 @@ func TestSearchCodePatterns_SpecialChars(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for patterns with special SQL LIKE characters
-	results, err := SearchCodePatterns(ctx, db, "repo", "[a-z]", "", "", 50)
+	results, err := SearchCodePatterns(ctx, db, "repo", CodePatternFilter{Literals: []string{"[a-z]"}, FilePathPrefix: "", Kind: ""}, nil, 50)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "regexFunc", results[0].Name)
@@ -527,7 +527,7 @@ func TestGetCallTree_Callees(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get call tree (callees direction)
-	edges, err := GetCallTree(ctx, db, root.ID, "callees", 2)
+	edges, _, err := GetCallTree(ctx, db, "repo", root.ID, "callees", 2)
 	require.NoError(t, err)
 	assert.Len(t, edges, 2, "should return level1 and level2")
 
@@ -578,7 +578,7 @@ func TestGetCallTree_Callers(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get call tree (callers direction)
-	edges, err := GetCallTree(ctx, db, target.ID, "callers", 1)
+	edges, _, err := GetCallTree(ctx, db, "repo", target.ID, "callers", 1)
 	require.NoError(t, err)
 	assert.Len(t, edges, 2, "should return caller1 and caller2")
 	assert.Equal(t, 1, edges[0].Depth)
@@ -623,7 +623,7 @@ func TestGetCallTree_MaxDepth(t *testing.T) {
 	require.NoError(t, err)
 
 	// Max depth is capped at 3
-	edges, err := GetCallTree(ctx, db, a.ID, "callees", 10)
+	edges, _, err := GetCallTree(ctx, db, "repo", a.ID, "callees", 10)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(edges), 3, "max depth should be capped at 3")
 }
@@ -653,7 +653,7 @@ func TestGetCallTree_CircularDeps(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should handle circular dependencies without infinite loop
-	edges, err := GetCallTree(ctx, db, a.ID, "callees", 3)
+	edges, _, err := GetCallTree(ctx, db, "repo", a.ID, "callees", 3)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(edges), 1, "should only visit b once (cycle detection)")
 }
@@ -777,7 +777,8 @@ func TestGetCallTree_EdgeCap(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should cap at 100 edges
-	edges, err := GetCallTree(ctx, db, root.ID, "callees", 1)
+	edges, truncated, err := GetCallTree(ctx, db, "repo", root.ID, "callees", 1)
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(edges), 100, "should cap at 100 edges")
+	assert.Len(t, edges, 100, "should cap at 100 edges")
+	assert.True(t, truncated, "150 reachable callees, 100 returned")
 }
