@@ -418,7 +418,10 @@ log_level: info
 #   - get_symbol_usages
 #   - get_call_tree
 #   - read_architecture_rules
-#   - memory  # registers save_symbol_memory, get_symbol_memories, purge_stale_memories
+#   - memory  # all three memory tools; or name them individually:
+#   - save_symbol_memory
+#   - get_symbol_memories
+#   - purge_stale_memories  # destructive; only registered when listed (or via memory)
 #   - find_dead_code
 #   - get_blast_radius
 #   - find_http_routes
@@ -555,6 +558,8 @@ Extracts exact source code of one or more named symbols with transitive dependen
 | `symbol_name` | string OR array | yes | — | Single symbol name OR array of symbol names (max 50). Supports qualified names (e.g. `UserAuth.validateToken`) |
 | `depth` | number | no | `1` | Dependency depth: `0` = symbol only, `1` = direct deps, max `3`. Applies to all symbols in batch |
 
+**Name resolution (all tools taking `symbol_name`):** exact name first, then exact qualified name. If neither exists and exactly one symbol contains the name, that symbol is used and reported with `"match_type": "fuzzy"` (otherwise `"exact"`). Several substring matches are an error listing up to five candidates (`"ambiguous"`); no match is "not found" with suggestions. `%` and `_` are literal characters. `save_symbol_memory` accepts exact names only.
+
 **Single symbol (backward compatible):**
 ```json
 { "symbol_name": "validateToken", "depth": 1 }
@@ -573,13 +578,15 @@ Extracts exact source code of one or more named symbols with transitive dependen
       "input": "validateToken",
       "data": {
         "symbol": { "name": "validateToken", "code_block": "...", ... },
+        "match_type": "exact",
         "dependencies": [...],
         "memories": [...]
       }
     },
     {
-      "input": "nonExistent",
-      "error": "symbol \"nonExistent\" not found in repository \"repo\""
+      "input": "parse",
+      "error": "symbol \"parse\" is ambiguous in repository \"repo\": ...",
+      "candidates": ["parseConfig (cfg.go:10)", "parseFlags (flags.go:4)"]
     }
   ],
   "total_symbols": 2,
@@ -614,7 +621,7 @@ Discovers symbols by natural-language intent via vector embeddings. Does **not**
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | yes | — | Natural-language description of what you're looking for |
-| `top_k` | number | no | `10` | Max results (max `50`) |
+| `top_k` | number | no | `10` | Max results: positive; values above `50` are capped to `50` |
 | `kind` | string | no | _(all)_ | Filter: `function`, `class`, `interface`, `type`, `variable` |
 | `file_path_prefix` | string | no | _(all)_ | Filter by file path prefix |
 | `min_similarity` | number | no | `0.3` | Minimum cosine similarity (0.0–1.0) |
@@ -638,7 +645,7 @@ Attaches a persistent note to a symbol. Survives re-indexing; auto-flagged stale
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `symbol_name` | string | yes | — | Symbol to annotate |
+| `symbol_name` | string | yes | — | Exact name or qualified name of the symbol to annotate (a partial name is rejected with suggestions) |
 | `note` | string | yes | — | The note (max 2000 chars) |
 | `author` | string | no | `"agent"` | `"agent"` or `"developer"` |
 
@@ -656,10 +663,10 @@ Retrieves notes for a symbol or file. At least one of `symbol_name` or `file_pat
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `symbol_name` | string | no* | — | Symbol to look up |
-| `file_path` | string | no* | — | File path for all symbols |
+| `symbol_name` | string | no* | — | Exact symbol name or qualified name (no partial matching) |
+| `file_path` | string | no* | — | Repo-relative file path for all symbols |
 | `offset` | number | no | `0` | Pagination offset |
-| `limit` | number | no | `20` | Max results (max `100`) |
+| `limit` | number | no | `20` | Max results (values above `100` are capped to `100`) |
 
 When `is_stale` is `true`: `stale_reason` explains why, `last_known_symbol` / `last_known_file` show the symbol's location at time of staling.
 
@@ -754,15 +761,18 @@ Traverses the dependency graph to show a call hierarchy. Use `direction='callees
 |-------|------|----------|---------|-------------|
 | `symbol_name` | string | yes | — | Root symbol name or qualified name |
 | `direction` | string | no | `callees` | `callees` or `callers` |
-| `depth` | number | no | `1` | Max traversal depth (max `3`) |
+| `depth` | number | no | `1` | Max traversal depth, `1`–`3` (`0` or less is an error; above `3` is capped) |
+
+At most 100 edges are returned; `truncated` is `true` when more symbols were reachable.
 
 ```json
 {
-  "root": { "name": "Walk", "qualified_name": "Walker.Walk", "kind": "method", "file_path": "internal/indexer/walker.go" },
+  "root": { "name": "Walk", "qualified_name": "Walker.Walk", "kind": "method", "file_path": "internal/indexer/walker.go", "match_type": "exact" },
   "edges": [
     { "depth": 1, "name": "hashFile", "qualified_name": "walker.hashFile", "kind": "function", "file_path": "internal/indexer/walker.go", "start_line": 120, "dep_kind": "call" }
   ],
   "edge_count": 5,
+  "truncated": false,
   "direction": "callees",
   "metadata": { "timing_ms": 3 }
 }
@@ -797,7 +807,7 @@ BFS through callers to show everything affected by changing a symbol. Groups res
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `symbol_name` | string | yes | — | Name or qualified name of the symbol to analyze |
-| `depth` | number | no | `2` | Max traversal depth (max `5`) |
+| `depth` | number | no | `2` | Max traversal depth (clamped to `1`–`3`). At most 100 affected symbols; `truncated` is `true` when more were reachable |
 
 ```json
 {
@@ -810,6 +820,7 @@ BFS through callers to show everything affected by changing a symbol. Groups res
   "total_affected": 3,
   "files_affected": 2,
   "by_depth": { "1": 2, "2": 1 },
+  "truncated": false,
   "metadata": { "timing_ms": 8, "tokens_saved_est": 2400 }
 }
 ```
@@ -830,9 +841,11 @@ BFS through callers to show everything affected by changing a symbol. Groups res
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `pattern` | string | yes | — | Regex pattern (Go RE2 syntax) to search for in code blocks |
-| `file_path_prefix` | string | no | _(all)_ | Filter to symbols in files starting with this prefix |
+| `file_path_prefix` | string | no | _(all)_ | Filter to symbols in files starting with this prefix (literal) |
 | `kind` | string | no | _(all)_ | Filter: `function`, `class`, `interface`, `type`, `variable`, `method` |
-| `limit` | number | no | `50` | Max results (max `200`) |
+| `limit` | number | no | `50` | Max results: positive; values above `200` are capped to `200` |
+
+Results are ordered by file and line. The regex is applied before the limit; `truncated` is `true` when more symbols match than `limit` (`truncated_reason: "limit"`) or when the scan stopped after 50,000 candidate symbols (`"scan_cap"`).
 
 ```json
 {
@@ -850,6 +863,8 @@ BFS through callers to show everything affected by changing a symbol. Groups res
   ],
   "result_count": 1,
   "pattern": "errors\\.New\\(",
+  "truncated": false,
+  "symbols_scanned": 14,
   "metadata": { "timing_ms": 8, "tokens_saved_est": 4200 }
 }
 ```
@@ -872,6 +887,8 @@ Discovers HTTP route definitions and call sites in the codebase and matches them
 | `path` | string | no | _(all)_ | Filter routes by path substring (e.g., `/api/users`) |
 | `file_path` | string | no | _(all)_ | Limit search to a specific file path |
 
+At most 100 routes are returned. `truncated` is `true` when more routes match the filter (`routes_truncated`) or when matching hit its cap of 200 definitions / 200 call sites (`matches_truncated`).
+
 ```json
 {
   "routes": [
@@ -885,6 +902,9 @@ Discovers HTTP route definitions and call sites in the codebase and matches them
       "confidence": 0.9 }
   ],
   "match_count": 1,
+  "truncated": false,
+  "routes_truncated": false,
+  "matches_truncated": false,
   "metadata": { "timing_ms": 12 }
 }
 ```
