@@ -60,6 +60,7 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 - `errgroup.Group` with `SetLimit` for bounded parallelism
 - `sync.RWMutex` for read-heavy shared state
 - Single SQLite writer (connection pool max=1)
+- Index runs are serialised per `indexer.Indexer` (`IndexRepo` holds a ctx-aware run slot); every indexer in one process that writes the same repo must share one `Indexer` (serve passes its indexer to the watcher via `WithIndexer`). Shutdown order: stop the watcher, `Indexer.Drain()`, then close embedder and DB
 
 ### Database
 - Parameterized queries only — no string interpolation in SQL
@@ -132,7 +133,7 @@ internal/store/routes.go           Route CRUD, filtering, path normalization, co
 internal/indexer/routes.go         Route extraction (FastAPI/Flask/Express) via adapters' optional GetRouteQuery()
 internal/extract/extract.go        `extract` command core: multi-query hybrid search, test filtering, budget packing (matches → direct dependency code → skeletons), symbol lines/offsets, entry points (JSON schema_version 2)
 cmd/context-link/extract.go        `extract` subcommand (flags, incremental index, exit codes)
-internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index)
+internal/watcher/watcher.go        fsnotify file watcher (500ms debounce, incremental re-index; watches new dirs with the walker's DirFilter, renames = removals)
 ```
 
 ## Adding a New Language
