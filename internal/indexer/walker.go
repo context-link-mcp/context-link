@@ -70,7 +70,8 @@ func NewWalker(registry *LanguageRegistry, repoRoot string) *Walker {
 // It respects .gitignore patterns and skips files exceeding maxFileSize.
 // Phase 1 discovers files (no I/O beyond stat), Phase 2 hashes in parallel.
 func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
-	gitignore := w.loadGitignore()
+	gitignore := newGitignores(w.repoRoot)
+	realRoot := resolvedRoot(w.repoRoot)
 
 	// Phase 1: Discover files (no hashing — fast directory traversal).
 	type candidate struct {
@@ -116,10 +117,25 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 			return nil
 		}
 
-		info, err := d.Info()
-		if err != nil {
-			slog.Warn("walker: failed to stat file", "path", path, "error", err)
-			return nil
+		readPath := path
+		var info fs.FileInfo
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			// A symlink is indexed as its target, which must be a regular
+			// file inside the root; the size limit applies to the target.
+			target, targetInfo, ok := resolveFileSymlink(path, realRoot)
+			if !ok {
+				return nil
+			}
+			readPath, info = target, targetInfo
+		case d.Type().IsRegular():
+			info, err = d.Info()
+			if err != nil {
+				slog.Warn("walker: failed to stat file", "path", path, "error", err)
+				return nil
+			}
+		default:
+			return nil // devices, pipes, sockets
 		}
 		if info.Size() > maxFileSize {
 			slog.Debug("walker: skipping large file", "path", relPath, "size", info.Size())
@@ -127,7 +143,7 @@ func (w *Walker) Walk(ctx context.Context) (*WalkResult, error) {
 		}
 
 		candidates = append(candidates, candidate{
-			path:    path,
+			path:    readPath,
 			relPath: relPath,
 			size:    info.Size(),
 			ext:     ext,
@@ -208,7 +224,7 @@ func (w *Walker) ToModelFiles(files []DiscoveredFile, repoName string) []models.
 // Ignore rules apply to entries inside the root, never to the root itself (a
 // repo checked out as "vendor" or a ".*" rule); paths outside the root are
 // always skipped.
-func (w *Walker) skipDir(path string, gitignore ignoreRules) bool {
+func (w *Walker) skipDir(path string, gitignore *gitignores) bool {
 	if path == w.repoRoot {
 		return false
 	}
@@ -229,37 +245,109 @@ func (w *Walker) skipDir(path string, gitignore ignoreRules) bool {
 }
 
 // DirFilter reports which directories a walk of a repo skips: the default
-// ignore patterns (node_modules, vendor, .git, ...) and the root .gitignore.
-// The file watcher uses it so that it watches exactly the directories that
-// are indexed.
+// ignore patterns (node_modules, vendor, .git, ...) and the .gitignore files
+// of the root and of nested directories. The file watcher uses it so that it
+// watches exactly the directories that are indexed.
 type DirFilter struct {
 	walker    *Walker
-	gitignore ignoreRules
+	gitignore *gitignores
 }
 
-// NewDirFilter returns the DirFilter for the repo at repoRoot. The root
-// .gitignore is read once, here.
+// NewDirFilter returns the DirFilter for the repo at repoRoot. Each
+// directory's .gitignore is read the first time a path below it is checked
+// and cached for the filter's lifetime.
 func NewDirFilter(repoRoot string) *DirFilter {
-	w := NewWalker(nil, repoRoot)
-	return &DirFilter{walker: w, gitignore: w.loadGitignore()}
+	return &DirFilter{walker: NewWalker(nil, repoRoot), gitignore: newGitignores(repoRoot)}
 }
 
 // Skip reports whether the directory at the absolute path dir is skipped by
 // the walker, either itself or because it lies outside the repo root. It
-// does not check dir's ancestors.
+// does not check whether an ancestor of dir is skipped.
 func (f *DirFilter) Skip(dir string) bool {
 	return f.walker.skipDir(filepath.Clean(dir), f.gitignore)
 }
 
-// loadGitignore reads .gitignore from the repo root and returns its rules.
-// Nested .gitignore files are not read.
-func (w *Walker) loadGitignore() ignoreRules {
-	f, err := os.Open(filepath.Join(w.repoRoot, ".gitignore"))
-	if err != nil {
-		return nil
+// gitignores holds the .gitignore rules of a repo: one file per directory,
+// each read lazily on first use and cached. It is safe for concurrent use.
+type gitignores struct {
+	root string
+	mu   sync.Mutex
+	dirs map[string]ignoreRules // slash-separated dir relative to root ("" = root) -> rules (nil = no file)
+}
+
+func newGitignores(root string) *gitignores {
+	return &gitignores{root: root, dirs: make(map[string]ignoreRules)}
+}
+
+// rules returns the rules of the .gitignore in relDir, reading it once.
+func (g *gitignores) rules(relDir string) ignoreRules {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if rules, ok := g.dirs[relDir]; ok {
+		return rules
 	}
-	defer f.Close()
-	return parseIgnoreRules(f)
+	var rules ignoreRules
+	if f, err := os.Open(filepath.Join(g.root, filepath.FromSlash(relDir), ".gitignore")); err == nil {
+		rules = parseIgnoreRules(f)
+		f.Close()
+	}
+	g.dirs[relDir] = rules
+	return rules
+}
+
+// match reports whether relPath (slash-separated, relative to the root) is
+// ignored. The .gitignore of every directory above relPath applies, with its
+// patterns relative to that directory; as in git, a deeper file overrides a
+// shallower one and within a file the last matching rule decides.
+func (g *gitignores) match(relPath string, isDir bool) bool {
+	parts := strings.Split(relPath, "/")
+	ignored := false
+	for i := range parts {
+		rules := g.rules(strings.Join(parts[:i], "/"))
+		ignored = rules.apply(parts[i:], isDir, ignored)
+	}
+	return ignored
+}
+
+// resolvedRoot returns root with symlinks resolved, for confining symlink
+// targets. It falls back to the absolute, cleaned root.
+func resolvedRoot(root string) string {
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		return real
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		return abs
+	}
+	return filepath.Clean(root)
+}
+
+// insideRoot reports whether the absolute path p is root or lies below it.
+func insideRoot(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveFileSymlink resolves the symlink at path and returns its target if
+// the target is a regular file inside realRoot. Links that dangle, point at a
+// directory or other non-regular file, or leave the root are skipped.
+func resolveFileSymlink(path, realRoot string) (string, fs.FileInfo, bool) {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		slog.Debug("walker: skipping unresolvable symlink", "path", path, "error", err)
+		return "", nil, false
+	}
+	if !insideRoot(realRoot, target) {
+		slog.Warn("walker: skipping symlink that points outside the project root", "path", path, "target", target)
+		return "", nil, false
+	}
+	info, err := os.Stat(target)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", nil, false
+	}
+	return target, info, true
 }
 
 // ignoreRule is one parsed .gitignore line.
@@ -308,13 +396,18 @@ func parseIgnoreRules(r io.Reader) ignoreRules {
 	return rules
 }
 
-// match reports whether relPath (slash-separated, relative to the repo root)
-// is ignored. It evaluates only relPath itself: the walker prunes ignored
+// match reports whether relPath (slash-separated, relative to the directory
+// holding the rules) is ignored by these rules alone. It evaluates only relPath itself: the walker prunes ignored
 // directories, so the contents of an excluded directory are never reached,
 // matching git's rule that they cannot be re-included.
 func (rules ignoreRules) match(relPath string, isDir bool) bool {
-	ignored := false
-	parts := strings.Split(relPath, "/")
+	return rules.apply(strings.Split(relPath, "/"), isDir, false)
+}
+
+// apply evaluates rules against the path components parts (relative to the
+// directory holding the rules) and returns the new ignored state, starting
+// from ignored as decided by shallower .gitignore files.
+func (rules ignoreRules) apply(parts []string, isDir bool, ignored bool) bool {
 	for _, rule := range rules {
 		if rule.dirOnly && !isDir {
 			continue
