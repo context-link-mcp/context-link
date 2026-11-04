@@ -25,23 +25,33 @@ var behavioralPatterns = []string{
 // BuildSymbolKeywords combines regex-extracted body keywords with
 // structured data from the dependency graph and symbol metadata.
 //
-// Sources:
-//   1. Existing regex extraction (error types, catch blocks, behavioral patterns)
-//   2. Callee names from the dependency graph
-//   3. Parameter type names from the symbol signature
-//   4. String literals and constants from variable/const initializers
+// Sources, in priority order:
+//  1. Existing regex extraction (error types, catch blocks, behavioral patterns)
+//  2. Type names from the symbol signature
+//  3. Callee names from the dependency graph (sorted: the graph has no order)
+//  4. Identifiers from variable/const initializers
 //
-// Returns a deduplicated, sorted, space-separated keyword string for embedding + FTS5.
+// Returns a deduplicated, space-separated keyword string for embedding +
+// FTS5. Keywords keep their priority and order of appearance, and the cap of
+// maxKeywords drops the least relevant ones, never by alphabet. The result is
+// deterministic for a given input.
 func BuildSymbolKeywords(codeBlock, kind string, calleeNames []string) string {
 	seen := make(map[string]struct{})
+	keywords := make([]string, 0, maxKeywords)
 
 	addKeyword := func(kw string) {
-		lower := strings.ToLower(kw)
-		if len(lower) > 2 { // Skip single/two-char noise
-			if _, ok := seen[lower]; !ok {
-				seen[lower] = struct{}{}
-			}
+		if len(keywords) >= maxKeywords {
+			return
 		}
+		lower := strings.ToLower(kw)
+		if len(lower) <= 2 { // Skip single/two-char noise
+			return
+		}
+		if _, ok := seen[lower]; ok {
+			return
+		}
+		seen[lower] = struct{}{}
+		keywords = append(keywords, lower)
 	}
 
 	// Source 1: Existing regex extraction for functions/methods.
@@ -51,14 +61,16 @@ func BuildSymbolKeywords(codeBlock, kind string, calleeNames []string) string {
 		}
 	}
 
-	// Source 2: Callee names from dependency graph.
-	for _, callee := range calleeNames {
-		addKeyword(callee)
-	}
-
-	// Source 3: Type names from signature.
+	// Source 2: Type names from signature.
 	for _, typeName := range extractTypeNames(codeBlock) {
 		addKeyword(typeName)
+	}
+
+	// Source 3: Callee names from dependency graph.
+	callees := append([]string(nil), calleeNames...)
+	sort.Strings(callees)
+	for _, callee := range callees {
+		addKeyword(callee)
 	}
 
 	// Source 4: Variable/const initializers.
@@ -66,17 +78,6 @@ func BuildSymbolKeywords(codeBlock, kind string, calleeNames []string) string {
 		for _, kw := range extractInitializerKeywords(codeBlock) {
 			addKeyword(kw)
 		}
-	}
-
-	// Convert to sorted slice for deterministic output.
-	keywords := make([]string, 0, len(seen))
-	for kw := range seen {
-		keywords = append(keywords, kw)
-	}
-	sort.Strings(keywords)
-
-	if len(keywords) > maxKeywords {
-		keywords = keywords[:maxKeywords]
 	}
 
 	return strings.Join(keywords, " ")
