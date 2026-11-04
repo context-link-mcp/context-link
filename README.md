@@ -385,7 +385,7 @@ Exit codes: `0` ok, `1` usage error, `2` index unusable (callers can continue wi
 
 | Category | Flag | Default | Description |
 |---|---|---|---|
-| **Behavior** | `--watch` | `false` | Auto re-index on file changes (fsnotify with 500ms debounce). Watches the directories `index` walks (skips `node_modules`, `vendor`, `.git`, ... and root `.gitignore` matches), including ones created later; renames and moves count as changes. Watcher re-indexes and `reindex_project` calls run one at a time |
+| **Behavior** | `--watch` | `false` | Auto re-index on file changes (fsnotify with 500ms debounce). Watches the directories `index` walks (skips `node_modules`, `vendor`, `.git`, ... and paths matched by the root or any nested `.gitignore`), including ones created later; renames and moves count as changes. Watcher re-indexes and `reindex_project` calls run one at a time |
 |  | `--tools` | _(all)_ | Comma-separated list of MCP tools to enable (e.g., `ping,get_code_by_symbol`) |
 |  | `--repo-name` | Directory name | Repository to serve; must match the `--repo-name` given to `index` |
 | **Embeddings** _(Advanced)_ | `--model-path` | _(built-in)_ | Path to custom ONNX model (overrides built-in Model2Vec) |
