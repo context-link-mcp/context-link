@@ -207,3 +207,36 @@ func TestDeleteEmbeddingsByRepo(t *testing.T) {
 	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM vec_symbols`).Scan(&count) //nolint:errcheck
 	assert.Equal(t, 1, count, "only delrepo embeddings should be removed")
 }
+
+// TestKNNSearch_CorruptBlobSkipped covers a stored embedding whose length is
+// not a multiple of 4. On master the trailing bytes were dropped and the row
+// scored as if valid (similarity 1.0 here); now every scan skips it.
+func TestKNNSearch_CorruptBlobSkipped(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	repo := "testrepo"
+	good := insertTestSymbol(t, db, repo, "good")
+	bad := insertTestSymbol(t, db, repo, "bad")
+	vec := makeVec(vectorstore.ModelDim, 0)
+	require.NoError(t, vectorstore.UpsertEmbedding(ctx, db, good, repo, vec))
+	require.NoError(t, vectorstore.UpsertEmbedding(ctx, db, bad, repo, vec))
+	_, err := db.ExecContext(ctx, `UPDATE vec_symbols SET embedding = embedding || x'0000' WHERE symbol_id = ?`, bad)
+	require.NoError(t, err)
+
+	results, err := vectorstore.KNNSearch(ctx, db, repo, vec, 10, 0.0)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, good, results[0].SymbolID)
+
+	cached, err := vectorstore.KNNSearchCached(ctx, db, vectorstore.NewVectorCache(repo), vec, 10, 0.0)
+	require.NoError(t, err)
+	require.Len(t, cached, 1)
+	assert.Equal(t, good, cached[0].SymbolID)
+
+	sims, err := vectorstore.Similarities(ctx, db, nil, repo, vec, []int64{good, bad})
+	require.NoError(t, err)
+	assert.Contains(t, sims, good)
+	assert.NotContains(t, sims, bad)
+}

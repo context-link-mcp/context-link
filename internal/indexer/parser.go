@@ -31,7 +31,9 @@ func NewParserPool(lang *sitter.Language) *ParserPool {
 }
 
 // Parse parses the given source code into a Tree-sitter AST tree.
-// It respects context cancellation and applies a default 5s timeout.
+// It respects context cancellation and applies a default 5s timeout. The
+// caller owns the tree and must Close it once no node from it is in use;
+// nodes must not be touched after Close.
 func (pp *ParserPool) Parse(ctx context.Context, source []byte) (*sitter.Tree, error) {
 	// Apply timeout if context doesn't already have a deadline.
 	if _, ok := ctx.Deadline(); !ok {

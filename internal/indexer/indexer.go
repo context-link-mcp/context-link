@@ -440,6 +440,10 @@ func (idx *Indexer) processFile(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("indexer: failed to parse %s: %w", file.RelPath, err)
 	}
+	// The extractors copy everything they keep out of the tree (strings and
+	// line numbers, never *sitter.Node), so the C tree is freed on return
+	// instead of waiting for a GC finaliser.
+	defer tree.Close()
 
 	symbols, err := idx.extractor.ExtractSymbols(ctx, tree, source, adapter, repoName, file.RelPath)
 	if err != nil {

@@ -105,6 +105,7 @@ func run(s *Store) {
 			source := []byte(tt.source)
 			tree, err := NewParserPoolManager().GetPool(tt.adapter).Parse(ctx, source)
 			require.NoError(t, err)
+			defer tree.Close()
 
 			deps, err := NewExtractor().ExtractDependencies(ctx, tree, source, tt.adapter, "f")
 			require.NoError(t, err)

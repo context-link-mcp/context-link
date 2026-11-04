@@ -113,8 +113,12 @@ func (vc *VectorCache) loadLocked(ctx context.Context, db *store.DB) error {
 		if err := rows.Scan(&symbolID, &blob); err != nil {
 			return fmt.Errorf("vectorstore: cache scan row: %w", err)
 		}
+		vec, ok := decodeRow(symbolID, blob)
+		if !ok {
+			continue
+		}
 		ids = append(ids, symbolID)
-		vecs = append(vecs, decodeFloat32s(blob))
+		vecs = append(vecs, vec)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("vectorstore: cache iterate: %w", err)
@@ -269,7 +273,9 @@ func Similarities(ctx context.Context, db *store.DB, cache *VectorCache, repoNam
 		if err := rows.Scan(&id, &blob); err != nil {
 			return nil, fmt.Errorf("vectorstore: scan embedding row: %w", err)
 		}
-		score(id, decodeFloat32s(blob))
+		if vec, ok := decodeRow(id, blob); ok {
+			score(id, vec)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("vectorstore: iterate embeddings: %w", err)
@@ -401,7 +407,9 @@ func KNNSearchFiltered(
 		if err := rows.Scan(&symbolID, &blob); err != nil {
 			return nil, fmt.Errorf("vectorstore: scan embedding row: %w", err)
 		}
-		s.add(symbolID, decodeFloat32s(blob))
+		if vec, ok := decodeRow(symbolID, blob); ok {
+			s.add(symbolID, vec)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("vectorstore: iterate embeddings: %w", err)
@@ -504,14 +512,34 @@ func encodeFloat32s(vals []float32) []byte {
 	return buf
 }
 
+// ErrCorruptEmbedding is returned for a stored embedding BLOB whose length
+// is not a whole number of float32 values.
+var ErrCorruptEmbedding = errors.New("vectorstore: corrupt embedding blob")
+
 // decodeFloat32s decodes little-endian IEEE 754 bytes into a float32 slice.
-func decodeFloat32s(buf []byte) []float32 {
+// A length that is not a multiple of 4 is rejected rather than silently
+// dropping the trailing bytes.
+func decodeFloat32s(buf []byte) ([]float32, error) {
+	if len(buf)%4 != 0 {
+		return nil, fmt.Errorf("%w: %d bytes is not a multiple of 4", ErrCorruptEmbedding, len(buf))
+	}
 	vals := make([]float32, len(buf)/4)
 	for i := range vals {
 		bits := binary.LittleEndian.Uint32(buf[i*4:])
 		vals[i] = math.Float32frombits(bits)
 	}
-	return vals
+	return vals, nil
+}
+
+// decodeRow decodes a scanned embedding BLOB, logging and reporting false for
+// a corrupt one so that callers skip that row instead of scoring garbage.
+func decodeRow(symbolID int64, blob []byte) ([]float32, bool) {
+	vec, err := decodeFloat32s(blob)
+	if err != nil {
+		slog.Warn("vectorstore: skipping corrupt embedding; re-index with --force", "symbol_id", symbolID, "error", err)
+		return nil, false
+	}
+	return vec, true
 }
 
 // dotProduct computes the dot product of two equal-length vectors.

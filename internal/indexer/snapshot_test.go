@@ -68,6 +68,7 @@ func runSnapshotTest(t *testing.T, adapter LanguageAdapter, langDir, fixture str
 	pool := poolMgr.GetPool(adapter)
 	tree, err := pool.Parse(context.Background(), source)
 	require.NoError(t, err, "failed to parse fixture %s", fixture)
+	defer tree.Close()
 
 	// Extract symbols.
 	extractor := NewExtractor()

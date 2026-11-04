@@ -36,6 +36,7 @@ func TestGenerateEmbeddings_WithMockEmbedder(t *testing.T) {
 	poolMgr := NewParserPoolManager()
 	tree, err := poolMgr.GetPool(goAdapter).Parse(ctx, source)
 	require.NoError(t, err)
+	defer tree.Close()
 
 	extractor := NewExtractor()
 	symbols, err := extractor.ExtractSymbols(ctx, tree, source, goAdapter, "embrepo", "sample.go")

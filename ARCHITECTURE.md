@@ -36,7 +36,7 @@ internal/
     server.go                   # MCP server setup, config-driven tool registry, stdio transport
   indexer/
     language.go                 # LanguageAdapter interface + LanguageRegistry (RWMutex)
-    walker.go                   # File walker (.gitignore, SHA-256 hashing, 1MB limit)
+    walker.go                   # File walker (root + nested .gitignore, symlinks confined to the root, SHA-256 hashing, 1MB limit)
     parser.go                   # ParserPool (fresh parser per parse — pooled parsers get poisoned by stale cancellation) + ParserPoolManager (lazy, per-grammar)
     extractor.go                # Query-based symbol + dependency extraction with dedup
     routes.go                   # HTTP route extraction (FastAPI, Flask, Express) via the optional RouteQueryProvider adapter interface; stores routes + handler links
@@ -186,7 +186,7 @@ Key design decisions:
 The indexer runs a six-phase pipeline via `errgroup` bounded worker pools:
 
 ```
-1. Walk      →  Discover source files (respects .gitignore, skips >1MB)
+1. Walk      →  Discover source files (respects root and nested .gitignore, follows file symlinks only inside the root, skips >1MB)
 2. Filter    →  Compare SHA-256 hashes against files table (incremental); detect + remove deleted files;
                 snapshot memories as stale before overwriting changed symbols; --force bypasses hash check
 3. Parse     →  Tree-sitter AST parsing via adapter-specific grammar pools
@@ -233,7 +233,7 @@ Version is injected at build time via `-X main.version=<tag>` ldflags, passed th
 
 ### File Watcher
 
-The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). It watches exactly the directories the walker indexes (`indexer.DirFilter`: `node_modules`, `.git`, `vendor`, `__pycache__`, ... and root `.gitignore` matches are excluded), adds directories created later, and treats renames like removals. The watcher re-indexes through the server's `Indexer`, whose runs are serialised, so watcher flushes and `reindex_project` calls never overlap; on shutdown the watcher waits for its in-flight run and `Indexer.Drain()` waits for the rest before the embedder and DB are closed.
+The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). It watches exactly the directories the walker indexes (`indexer.DirFilter`: `node_modules`, `.git`, `vendor`, `__pycache__`, ... and matches of the root or nested `.gitignore` files are excluded; each `.gitignore` is read once, when a path below it is first checked), adds directories created later, and treats renames like removals. The watcher re-indexes through the server's `Indexer`, whose runs are serialised, so watcher flushes and `reindex_project` calls never overlap; on shutdown the watcher waits for its in-flight run and `Indexer.Drain()` waits for the rest before the embedder and DB are closed.
 
 ## Design Principles
 

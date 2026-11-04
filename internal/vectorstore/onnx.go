@@ -14,6 +14,9 @@ import (
 // ErrModelNotConfigured is returned when no model path has been configured.
 var ErrModelNotConfigured = errors.New("vectorstore: ONNX model path not configured")
 
+// ErrEmbedderClosed is returned by an embedder used after Close.
+var ErrEmbedderClosed = errors.New("vectorstore: embedder is closed")
+
 // ortGlobal guards one-time ORT environment initialization per process.
 var (
 	ortInitOnce sync.Once
@@ -56,6 +59,8 @@ type ONNXEmbedder struct {
 	typeTensor *ort.Tensor[int64]
 	outTensor  *ort.Tensor[float32]
 	session    *ort.AdvancedSession
+
+	closed bool // set by Close; guarded by mu
 }
 
 // NewONNXEmbedder creates an ONNXEmbedder and initializes it immediately:
@@ -124,29 +129,48 @@ func NewConfiguredEmbedder(modelPath, vocabPath, libPath string) Embedder {
 // Dim implements Embedder.
 func (e *ONNXEmbedder) Dim() int { return ONNXModelDim }
 
-// Close implements Embedder — destroys the ORT session and tensors.
+// Close implements Embedder: it destroys the ORT session and tensors (session
+// first, as it references them). It is idempotent; after it, EmbedOne and
+// EmbedBatch return ErrEmbedderClosed. Destroy errors are returned once.
 func (e *ONNXEmbedder) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
+	e.closed = true
+
+	var errs []error
 	if e.session != nil {
-		e.session.Destroy() //nolint:errcheck
+		if err := e.session.Destroy(); err != nil {
+			errs = append(errs, fmt.Errorf("vectorstore: destroy ORT session: %w", err))
+		}
 	}
 	for _, t := range []*ort.Tensor[int64]{e.idTensor, e.maskTensor, e.typeTensor} {
 		if t != nil {
-			t.Destroy() //nolint:errcheck
+			if err := t.Destroy(); err != nil {
+				errs = append(errs, fmt.Errorf("vectorstore: destroy input tensor: %w", err))
+			}
 		}
 	}
 	if e.outTensor != nil {
-		e.outTensor.Destroy() //nolint:errcheck
+		if err := e.outTensor.Destroy(); err != nil {
+			errs = append(errs, fmt.Errorf("vectorstore: destroy output tensor: %w", err))
+		}
 	}
 	e.session, e.idTensor, e.maskTensor, e.typeTensor, e.outTensor = nil, nil, nil, nil, nil
-	return nil
+	e.tokenizer = nil
+	e.inputIDs, e.attMasks, e.typeIDs = nil, nil, nil
+	return errors.Join(errs...)
 }
 
 // EmbedOne implements Embedder.
 func (e *ONNXEmbedder) EmbedOne(ctx context.Context, text string) ([]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil, ErrEmbedderClosed
+	}
 	return e.inferOne(text)
 }
 
@@ -155,6 +179,9 @@ func (e *ONNXEmbedder) EmbedOne(ctx context.Context, text string) ([]float32, er
 func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil, ErrEmbedderClosed
+	}
 
 	results := make([][]float32, len(texts))
 	for i, text := range texts {
@@ -228,6 +255,7 @@ func (e *ONNXEmbedder) initialize() error {
 // L2-normalized embedding. Must be called with e.mu held.
 func (e *ONNXEmbedder) inferOne(text string) ([]float32, error) {
 	out := e.tokenizer.Tokenize(text, MaxSeqLen)
+	logTruncated(out, text)
 
 	// Nothing the model knows (empty, or every word [UNK]): return the zero
 	// vector, as Model2Vec does, instead of a [CLS]/[UNK] embedding that

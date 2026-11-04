@@ -74,22 +74,24 @@ func (sf *SafetensorsFile) GetFloat32Tensor(name string) ([]float32, []int, erro
 		return nil, nil, fmt.Errorf("safetensors: tensor %q not found", name)
 	}
 
-	start := sf.dataOffset + info.DataOffsets[0]
-	end := sf.dataOffset + info.DataOffsets[1]
-	if start > len(sf.raw) || end > len(sf.raw) || start > end {
-		return nil, nil, fmt.Errorf("safetensors: tensor %q has invalid data offsets [%d, %d]", name, info.DataOffsets[0], info.DataOffsets[1])
+	// Offsets are relative to the data section; both must lie inside it.
+	// Checking against the section length (not start+offset) cannot overflow.
+	dataLen := len(sf.raw) - sf.dataOffset
+	off0, off1 := info.DataOffsets[0], info.DataOffsets[1]
+	if off0 < 0 || off1 < off0 || off1 > dataLen {
+		return nil, nil, fmt.Errorf("safetensors: tensor %q has invalid data offsets [%d, %d] (data section is %d bytes)", name, off0, off1, dataLen)
 	}
+	dataBytes := sf.raw[sf.dataOffset+off0 : sf.dataOffset+off1]
 
-	dataBytes := sf.raw[start:end]
-	numElements := 1
-	for _, d := range info.Shape {
-		numElements *= d
+	numElements, err := elementCount(info.Shape)
+	if err != nil {
+		return nil, nil, fmt.Errorf("safetensors: tensor %q: %w", name, err)
 	}
 
 	switch info.Dtype {
 	case "F32":
-		if len(dataBytes) != numElements*4 {
-			return nil, nil, fmt.Errorf("safetensors: tensor %q size mismatch: expected %d bytes, got %d", name, numElements*4, len(dataBytes))
+		if numElements > len(dataBytes)/4 || len(dataBytes) != numElements*4 {
+			return nil, nil, fmt.Errorf("safetensors: tensor %q size mismatch: shape %v needs %d elements, got %d bytes", name, info.Shape, numElements, len(dataBytes))
 		}
 		vals := make([]float32, numElements)
 		for i := range vals {
@@ -98,8 +100,8 @@ func (sf *SafetensorsFile) GetFloat32Tensor(name string) ([]float32, []int, erro
 		return vals, info.Shape, nil
 
 	case "F16":
-		if len(dataBytes) != numElements*2 {
-			return nil, nil, fmt.Errorf("safetensors: tensor %q size mismatch: expected %d bytes, got %d", name, numElements*2, len(dataBytes))
+		if numElements > len(dataBytes)/2 || len(dataBytes) != numElements*2 {
+			return nil, nil, fmt.Errorf("safetensors: tensor %q size mismatch: shape %v needs %d elements, got %d bytes", name, info.Shape, numElements, len(dataBytes))
 		}
 		vals := make([]float32, numElements)
 		for i := range vals {
@@ -110,6 +112,22 @@ func (sf *SafetensorsFile) GetFloat32Tensor(name string) ([]float32, []int, erro
 	default:
 		return nil, nil, fmt.Errorf("safetensors: unsupported dtype %q for tensor %q", info.Dtype, name)
 	}
+}
+
+// elementCount returns the number of elements of a tensor shape, rejecting
+// negative dimensions and products that overflow int.
+func elementCount(shape []int) (int, error) {
+	n := 1
+	for _, d := range shape {
+		if d < 0 {
+			return 0, fmt.Errorf("negative dimension in shape %v", shape)
+		}
+		if d != 0 && n > math.MaxInt/d {
+			return 0, fmt.Errorf("shape %v overflows the element count", shape)
+		}
+		n *= d
+	}
+	return n, nil
 }
 
 // float16ToFloat32 converts an IEEE 754 half-precision float to float32.

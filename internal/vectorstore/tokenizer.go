@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"unicode"
@@ -24,6 +25,9 @@ type TokenizerOutput struct {
 	InputIDs      []int64
 	AttentionMask []int64
 	TokenTypeIDs  []int64
+	// Truncated reports that the text had more WordPiece tokens than fit in
+	// maxLen ([CLS] and [SEP] included) and the rest were dropped.
+	Truncated bool
 }
 
 // BERTTokenizer implements BERT WordPiece tokenization.
@@ -108,11 +112,13 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 	tokenIDs := make([]int64, 0, maxLen)
 	tokenIDs = append(tokenIDs, t.clsID)
 
+	truncated := false
+words:
 	for _, word := range words {
-		subwords := t.wordpieceTokenize(word)
-		for _, sw := range subwords {
+		for _, sw := range t.wordpieceTokenize(word) {
 			if len(tokenIDs)-1 >= maxTokens {
-				break
+				truncated = true
+				break words
 			}
 			id, ok := t.vocab[sw]
 			if !ok {
@@ -120,9 +126,6 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 			} else {
 				tokenIDs = append(tokenIDs, id)
 			}
-		}
-		if len(tokenIDs)-1 >= maxTokens {
-			break
 		}
 	}
 	tokenIDs = append(tokenIDs, t.sepID)
@@ -145,7 +148,24 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 		InputIDs:      padded,
 		AttentionMask: attnMask,
 		TokenTypeIDs:  tokenTypeIDs,
+		Truncated:     truncated,
 	}
+}
+
+// logTruncated logs at debug level when an embedding input lost tokens to
+// the MaxSeqLen cap, so the truncation is visible instead of silent.
+func logTruncated(out TokenizerOutput, text string) {
+	if !out.Truncated {
+		return
+	}
+	preview := text
+	if i := strings.IndexByte(preview, '\n'); i >= 0 {
+		preview = preview[:i]
+	}
+	if utf8.RuneCountInString(preview) > 80 {
+		preview = string([]rune(preview)[:80])
+	}
+	slog.Debug("vectorstore: embedding input truncated", "max_tokens", MaxSeqLen, "bytes", len(text), "text", preview)
 }
 
 // IsSpecial reports whether id is one of the tokenizer's special tokens

@@ -139,6 +139,7 @@ func (e *Model2VecEmbedder) initialize() error {
 func (e *Model2VecEmbedder) embedOne(text string) []float32 {
 	dim := e.config.HiddenDim
 	out := e.tokenizer.Tokenize(text, MaxSeqLen)
+	logTruncated(out, text)
 
 	result := make([]float32, dim)
 	var count float32
