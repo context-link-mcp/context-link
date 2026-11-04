@@ -2,8 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/context-link-mcp/context-link/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -203,57 +208,220 @@ func TestSearchCodePatternsHandler_TokenSavings(t *testing.T) {
 	assert.Contains(t, raw.Text, "cost_avoided_est")
 }
 
-func TestExtractLiteralSubstring(t *testing.T) {
+func TestRequiredLiterals(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		pattern  string
-		expected string
+		expected []string
 	}{
-		{
-			name:     "simple literal",
-			pattern:  "errorHandler",
-			expected: "errorHandler",
-		},
-		{
-			name:     "pattern with anchors",
-			pattern:  "^function.*$",
-			expected: "function",
-		},
-		{
-			name:     "pattern with escapes",
-			pattern:  `errors\.New\(`,
-			expected: "errors",
-		},
-		{
-			name:     "complex regex",
-			pattern:  `retry.*(?:backoff|timeout)`,
-			expected: "retry",
-		},
-		{
-			name:     "no literal sequence",
-			pattern:  `.*`,
-			expected: "",
-		},
-		{
-			name:     "short literal (< 3 chars)",
-			pattern:  `ab.*`,
-			expected: "",
-		},
-		{
-			name:     "word boundary in pattern",
-			pattern:  `\berror\b`,
-			expected: "error",
-		},
+		{"simple literal", "errorHandler", []string{"errorHandler"}},
+		{"pattern with anchors", "^function.*$", []string{"function"}},
+		{"escapes are literal characters", `errors\.New\(`, []string{"errors.New("}},
+		{"alternation contributes nothing", `retry.*(?:backoff|timeout)`, []string{"retry"}},
+		{"alternation of words", `foo|bar`, nil},
+		{"common alternation prefix is required", `handleGet|handlePost`, []string{"handle"}},
+		{"no literal sequence", `.*`, nil},
+		{"short literal (< 2 bytes)", `a.*`, nil},
+		{"two-byte literal kept", `ab.*`, []string{"ab"}},
+		{"word boundary is zero-width", `\berror\b`, []string{"error"}},
+		{"whitespace class splits literals", `func\s+main`, []string{"func", "main"}},
+		{"character class is not literal", `[abc]def`, []string{"def"}},
+		{"optional part dropped", `colou?r`, []string{"colo"}},
+		{"star part dropped", `ab(cd)*ef`, []string{"ab", "ef"}},
+		{"plus keeps its body", `x(abc)+y`, []string{"abc"}},
+		{"case folded ascii literal kept", `(?i)error`, []string{"ERROR"}}, // the parser stores folded runes upper-cased; LIKE ignores ASCII case
+		{"case folded k dropped", `(?i)kelvin`, nil},
+		{"case folded s dropped", `(?i)status`, nil},
+		{"longest first, at most three", `alpha.beta.gamma.de.epsilon`, []string{"epsilon", "alpha", "gamma"}},
+		{"invalid regex", `[`, nil},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := extractLiteralSubstring(tt.pattern)
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expected, requiredLiterals(tt.pattern))
 		})
 	}
+}
+
+// TestRequiredLiterals_Sound checks the prefilter property on real inputs:
+// every string a pattern matches contains each required literal (ASCII case
+// aside, as LIKE is case-insensitive).
+func TestRequiredLiterals_Sound(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ pattern, input string }{
+		{`foo|bar`, "x bar y"},
+		{`func\s+main`, "func   main()"},
+		{`[Ee]rror`, "Error"},
+		{`colou?r`, "color"},
+		{`(?i)ERROR`, "error"},
+		{`handleGet|handlePost`, "handlePost"},
+		{`a\.b`, "a.b"},
+	}
+	for _, c := range cases {
+		re := regexp.MustCompile(c.pattern)
+		require.True(t, re.MatchString(c.input), c.pattern)
+		for _, lit := range requiredLiterals(c.pattern) {
+			assert.Contains(t, strings.ToLower(c.input), strings.ToLower(lit), "pattern %q", c.pattern)
+		}
+	}
+}
+
+// searchPatterns runs search_code_patterns and decodes the response.
+func searchPatterns(t *testing.T, db *store.DB, args map[string]any) (patternResponse, bool) {
+	t.Helper()
+	handler := searchCodePatternsHandler(db, "repo", NewSessionTokenTracker())
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = args
+	result, err := handler(context.Background(), req)
+	require.NoError(t, err)
+	var resp patternResponse
+	if result.IsError {
+		return resp, true
+	}
+	raw, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(raw.Text), &resp))
+	return resp, false
+}
+
+type patternResponse struct {
+	Results []struct {
+		SymbolName string `json:"symbol_name"`
+	} `json:"results"`
+	ResultCount     int    `json:"result_count"`
+	Truncated       bool   `json:"truncated"`
+	TruncatedReason string `json:"truncated_reason"`
+}
+
+func (r patternResponse) names() []string {
+	names := make([]string, 0, len(r.Results))
+	for _, res := range r.Results {
+		names = append(names, res.SymbolName)
+	}
+	return names
+}
+
+// TestSearchCodePatterns_PrefilterKeepsRealMatches: patterns whose old
+// heuristic prefilter excluded real matches. Each case fails on master.
+func TestSearchCodePatterns_PrefilterKeepsRealMatches(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	insertSymbol(t, db, "repo", "onlyBar", "function", "function onlyBar() { return bar(); }")
+	insertSymbol(t, db, "repo", "hexy", "function", "function ABCD() {}")
+	insertSymbol(t, db, "repo", "classy", "function", "function classy() { return zzError; }")
+
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		// Master prefiltered on "foo", the first branch only.
+		{"second alternation branch", `foo\(|bar\(`, "onlyBar"},
+		// Master skipped the "x" of \x41 and prefiltered on "41BCD".
+		{"escape sequence", `\x41BCD`, "hexy"},
+		// Master took the class contents "xyz" as a literal.
+		{"character class", `[xyz]+Error`, "classy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp, isErr := searchPatterns(t, db, map[string]any{"pattern": tc.pattern})
+			require.False(t, isErr)
+			assert.Equal(t, []string{tc.want}, resp.names())
+		})
+	}
+}
+
+// TestSearchCodePatterns_RegexBeforeLimit: the limit applies to regex
+// matches, not to LIKE candidates. On master the candidates were cut at
+// limit*2 before the regex ran, so matches after many non-matching
+// candidates were lost.
+func TestSearchCodePatterns_RegexBeforeLimit(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	// 1,200 candidates containing "retry" (more than two pages) that do not
+	// match, then two that do; file paths order them last.
+	for i := 0; i < 1200; i++ {
+		insertSymbolWithLines(t, db, "repo", fmt.Sprintf("noise%04d", i), "function",
+			"function f() { retry(1) }", "a/noise.ts", i+1, i+1)
+	}
+	insertSymbolWithLines(t, db, "repo", "hitOne", "function", "function g() { retry(backoff) }", "z/hit.ts", 1, 1)
+	insertSymbolWithLines(t, db, "repo", "hitTwo", "function", "function h() { retry(backoff) }", "z/hit.ts", 2, 2)
+
+	resp, isErr := searchPatterns(t, db, map[string]any{"pattern": `retry\(backoff\)`, "limit": 1})
+	require.False(t, isErr)
+	assert.Equal(t, []string{"hitOne"}, resp.names())
+	assert.True(t, resp.Truncated, "a second match exists beyond limit 1")
+	assert.Equal(t, "limit", resp.TruncatedReason)
+
+	resp, isErr = searchPatterns(t, db, map[string]any{"pattern": `retry\(backoff\)`, "limit": 5})
+	require.False(t, isErr)
+	assert.Equal(t, []string{"hitOne", "hitTwo"}, resp.names())
+	assert.False(t, resp.Truncated)
+}
+
+func TestSearchCodePatterns_LimitValidation(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	insertSymbol(t, db, "repo", "f", "function", "function f() {}")
+
+	tests := []struct {
+		name    string
+		limit   any
+		wantErr bool
+	}{
+		{"negative is invalid", -1, true}, // master returned no results
+		{"zero is invalid", 0, true},
+		{"above max is capped", 1000, false},
+		{"default", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := map[string]any{"pattern": "function"}
+			if tc.limit != nil {
+				args["limit"] = tc.limit
+			}
+			resp, isErr := searchPatterns(t, db, args)
+			assert.Equal(t, tc.wantErr, isErr)
+			if !tc.wantErr {
+				assert.Equal(t, 1, resp.ResultCount)
+			}
+		})
+	}
+}
+
+// TestSearchCodePatterns_EmptyResultsIsArray: no match returns "results": [].
+func TestSearchCodePatterns_EmptyResultsIsArray(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	handler := searchCodePatternsHandler(db, "repo", NewSessionTokenTracker())
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"pattern": "nothing_matches_this"}
+	result, err := handler(context.Background(), req)
+	require.NoError(t, err)
+	raw, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, raw.Text, `"results":[]`)
+}
+
+// TestSearchCodePatterns_PrefixWildcardsAreLiteral: "_" in file_path_prefix
+// is a literal underscore, not a LIKE wildcard, and backslashes are
+// normalised.
+func TestSearchCodePatterns_PrefixWildcardsAreLiteral(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	insertSymbolWithLines(t, db, "repo", "inUnderscore", "function", "function a() {}", "my_pkg/a.ts", 1, 1)
+	insertSymbolWithLines(t, db, "repo", "inOther", "function", "function b() {}", "myXpkg/b.ts", 1, 1)
+
+	resp, isErr := searchPatterns(t, db, map[string]any{"pattern": "function", "file_path_prefix": "my_pkg/"})
+	require.False(t, isErr)
+	assert.Equal(t, []string{"inUnderscore"}, resp.names())
+
+	resp, isErr = searchPatterns(t, db, map[string]any{"pattern": "function", "file_path_prefix": `my_pkg\`})
+	require.False(t, isErr)
+	assert.Equal(t, []string{"inUnderscore"}, resp.names())
 }

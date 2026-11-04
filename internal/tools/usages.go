@@ -49,13 +49,11 @@ func symbolUsagesHandler(db *store.DB, repoName string, tracker *SessionTokenTra
 			return mcp.NewToolResultError("get_symbol_usages: 'symbol_name' parameter is required and must not be empty"), nil
 		}
 
-		sym, err := store.ResolveSymbol(ctx, db, repoName, symbolName)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"get_symbol_usages: symbol %q not found in repository %q. Try using semantic_search_symbols first.",
-				symbolName, repoName,
-			)), nil
+		res, msg := resolveSymbolArg(ctx, db, "get_symbol_usages", repoName, symbolName)
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
+		sym := res.Symbol
 
 		// Get reverse dependencies (who calls this symbol).
 		deps, err := store.GetDependenciesByCallee(ctx, db, sym.ID)
@@ -74,7 +72,7 @@ func symbolUsagesHandler(db *store.DB, repoName string, tracker *SessionTokenTra
 		}
 
 		// Build usage list and collect unique files for token savings.
-		var usages []usageEntry
+		usages := []usageEntry{}
 		fileSet := map[string]struct{}{sym.FilePath: {}}
 		for _, d := range deps {
 			caller, ok := callerMap[d.CallerID]
@@ -111,6 +109,7 @@ func symbolUsagesHandler(db *store.DB, repoName string, tracker *SessionTokenTra
 				"qualified_name": sym.QualifiedName,
 				"kind":           sym.Kind,
 				"file_path":      sym.FilePath,
+				"match_type":     matchType(res),
 			},
 			"usages":      usages,
 			"usage_count": len(usages),

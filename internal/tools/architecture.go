@@ -51,6 +51,9 @@ func readArchitectureRulesHandler(projectRoot string, tracker *SessionTokenTrack
 		}
 
 		sections := parseMarkdownSections(string(data))
+		if sections == nil {
+			sections = []models.Section{} // an empty file yields "sections": [], not null
+		}
 		timingMs := time.Since(start).Milliseconds()
 
 		// Token savings: reading ARCHITECTURE.md via this tool returns structured

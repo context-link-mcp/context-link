@@ -67,7 +67,7 @@ func modifiedSymbolsHandler(
 		}
 
 		// Map hunks to symbols.
-		var results []modifiedSymbolResult
+		results := []modifiedSymbolResult{}
 		for _, fileDiff := range gitDiff.Files {
 			if fileDiff.Status == "D" {
 				// Deleted files: symbols no longer exist on disk, but may still be in index.
@@ -141,7 +141,7 @@ type modifiedSymbolResult struct {
 
 // computeChangedLines returns the specific line numbers within the symbol that were changed.
 func computeChangedLines(sym models.Symbol, hunks []GitHunk) []int {
-	var lines []int
+	lines := []int{}
 	for _, hunk := range hunks {
 		hunkEnd := hunk.StartLine + hunk.LineCount - 1
 		// Check if this hunk overlaps with the symbol's line range.

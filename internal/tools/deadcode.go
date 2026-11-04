@@ -2,9 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -53,16 +50,9 @@ func deadCodeHandler(db *store.DB, repoName, projectRoot string, tracker *Sessio
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
 
-		filePathParam := req.GetString("file_path", "")
-
-		// Check if the file exists on disk when a file_path filter is specified.
-		if filePathParam != "" && projectRoot != "" {
-			absPath := filepath.Join(projectRoot, filePathParam)
-			if _, err := os.Stat(absPath); os.IsNotExist(err) {
-				return mcp.NewToolResultError(fmt.Sprintf(
-					"find_dead_code: file %q does not exist on disk.", filePathParam,
-				)), nil
-			}
+		filePathParam, errMsg := cleanFileFilter("find_dead_code", projectRoot, req.GetString("file_path", ""))
+		if errMsg != "" {
+			return mcp.NewToolResultError(errMsg), nil
 		}
 
 		opts := store.DeadCodeOptions{

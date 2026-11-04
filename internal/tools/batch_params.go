@@ -59,6 +59,8 @@ type batchItemResult struct {
 	Input any    `json:"input"`           // The input value that was processed
 	Data  any    `json:"data,omitempty"`  // Result data (present on success)
 	Error string `json:"error,omitempty"` // Error message (present on failure)
+	// Candidates lists close matches when a name did not resolve.
+	Candidates []string `json:"candidates,omitempty"`
 }
 
 // newBatchSuccess creates a successful batch item result.

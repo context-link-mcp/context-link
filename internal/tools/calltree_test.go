@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -93,37 +94,139 @@ func TestCallTree_Callers(t *testing.T) {
 	assert.Contains(t, names, "caller2")
 }
 
-func TestCallTree_DepthZero(t *testing.T) {
+// TestCallTree_DepthValidation: depth must be at least 1 (master accepted
+// depth 0 and returned an empty tree); values above 3 are capped.
+func TestCallTree_DepthValidation(t *testing.T) {
 	t.Parallel()
 	db := openToolTestDB(t)
-
-	// Setup: root -> callee
 	rootID := insertSymbol(t, db, "repo", "root", "function", "func root() {}")
 	calleeID := insertSymbol(t, db, "repo", "callee", "function", "func callee() {}")
 	insertDependency(t, db, rootID, calleeID, "call")
 
-	handler := callTreeHandler(db, "repo", NewSessionTokenTracker())
-	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"symbol_name": "root",
-		"direction":   "callees",
-		"depth":       0,
+	tests := []struct {
+		name    string
+		depth   int
+		wantErr bool
+	}{
+		{"zero", 0, true},
+		{"negative", -2, true},
+		{"one", 1, false},
+		{"capped", 9, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := callTreeHandler(db, "repo", NewSessionTokenTracker())
+			req := mcp.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"symbol_name": "root", "depth": tc.depth}
+			result, err := handler(context.Background(), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantErr, result.IsError)
+		})
+	}
+}
+
+// TestCallTree_TruncatedFlag: more than 100 reachable callees set
+// "truncated": true (master capped silently).
+func TestCallTree_TruncatedFlag(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	rootID := insertSymbol(t, db, "repo", "root", "function", "func root() {}")
+	for i := 0; i < 101; i++ {
+		id := insertSymbol(t, db, "repo", fmt.Sprintf("callee%03d", i), "function", "func c() {}")
+		insertDependency(t, db, rootID, id, "call")
 	}
 
+	handler := callTreeHandler(db, "repo", NewSessionTokenTracker())
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"symbol_name": "root"}
 	result, err := handler(context.Background(), req)
 	require.NoError(t, err)
-	assert.False(t, result.IsError)
+	require.False(t, result.IsError)
 
 	var resp struct {
-		EdgeCount int `json:"edge_count"`
-		Edges     []any `json:"edges"`
+		EdgeCount int  `json:"edge_count"`
+		Truncated bool `json:"truncated"`
 	}
 	raw, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
 	require.NoError(t, json.Unmarshal([]byte(raw.Text), &resp))
+	assert.Equal(t, 100, resp.EdgeCount)
+	assert.True(t, resp.Truncated)
+}
 
-	assert.Equal(t, 0, resp.EdgeCount, "depth 0 should return no edges")
-	assert.Empty(t, resp.Edges)
+// TestCallTree_RepoScoped: an edge into another repo's symbol is not
+// followed (master's GetCallTree joined symbols of every repo).
+func TestCallTree_RepoScoped(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	rootID := insertSymbol(t, db, "repo", "root", "function", "func root() {}")
+	localID := insertSymbol(t, db, "repo", "local", "function", "func local() {}")
+	foreignID := insertSymbol(t, db, "other", "foreign", "function", "func foreign() {}")
+	insertDependency(t, db, rootID, localID, "call")
+	insertDependency(t, db, rootID, foreignID, "call")
+
+	handler := callTreeHandler(db, "repo", NewSessionTokenTracker())
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"symbol_name": "root"}
+	result, err := handler(context.Background(), req)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Edges []struct {
+			Name string `json:"name"`
+		} `json:"edges"`
+		Truncated bool `json:"truncated"`
+	}
+	raw, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(raw.Text), &resp))
+	require.Len(t, resp.Edges, 1)
+	assert.Equal(t, "local", resp.Edges[0].Name)
+	assert.False(t, resp.Truncated)
+}
+
+// TestCallTree_FuzzyAndAmbiguousNames: a unique substring match resolves
+// with match_type "fuzzy"; several matches are an error listing candidates;
+// "%" no longer matches everything.
+func TestCallTree_FuzzyAndAmbiguousNames(t *testing.T) {
+	t.Parallel()
+	db := openToolTestDB(t)
+	insertSymbol(t, db, "repo", "validateToken", "function", "func validateToken() {}")
+	insertSymbol(t, db, "repo", "parseConfig", "function", "func parseConfig() {}")
+	insertSymbol(t, db, "repo", "parseFlags", "function", "func parseFlags() {}")
+
+	call := func(name string) (*mcp.CallToolResult, string) {
+		handler := callTreeHandler(db, "repo", NewSessionTokenTracker())
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = map[string]any{"symbol_name": name}
+		result, err := handler(context.Background(), req)
+		require.NoError(t, err)
+		raw, ok := result.Content[0].(mcp.TextContent)
+		require.True(t, ok)
+		return result, raw.Text
+	}
+
+	result, text := call("validateTok")
+	require.False(t, result.IsError)
+	assert.Contains(t, text, `"match_type":"fuzzy"`)
+	assert.Contains(t, text, `"name":"validateToken"`)
+
+	result, text = call("validateToken")
+	require.False(t, result.IsError)
+	assert.Contains(t, text, `"match_type":"exact"`)
+
+	result, text = call("parse")
+	assert.True(t, result.IsError)
+	assert.Contains(t, text, "ambiguous")
+	assert.Contains(t, text, "parseConfig")
+	assert.Contains(t, text, "parseFlags")
+
+	for _, wildcard := range []string{"%", "_", "   "} {
+		result, _ = call(wildcard)
+		assert.True(t, result.IsError, "%q must not resolve to an arbitrary symbol", wildcard)
+	}
 }
 
 func TestCallTree_DepthOne(t *testing.T) {
