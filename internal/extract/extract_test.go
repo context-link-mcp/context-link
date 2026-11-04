@@ -40,6 +40,28 @@ func TestIsNoisePath(t *testing.T) {
 		{"db/migrations/001_init.sql", true},
 		{"src\\fixtures\\a.ts", true},
 		{"src/latest/contest.py", false},
+		// .NET test projects, Django tests, mock and testutil dirs.
+		{"src/Foo.Tests/AuthTests.cs", true},
+		{"src/Foo.UnitTests/A.cs", true},
+		{"src/Foo.IntegrationTests/A.cs", true},
+		{"src/Foo.Test/A.cs", true},
+		{"src/Foo.Specs/A.cs", true},
+		{"app/tests.py", true},
+		{"internal/mock/store.go", true},
+		{"internal/testutil/db.go", true},
+		{"pkg/testutils/db.go", true},
+		// Must not over-match.
+		{"src/Foo.Core/Auth.cs", false},
+		{"src/my.contest/a.go", false},
+		{"contest.go", false},
+		{"latest/handler.go", false},
+		{"app/latest.tests/x.go", true},
+		{"app/attests.py", false},
+		{"app/test.py", false},
+		{"pkg/mockery.go", false},
+		{"pkg/mocking/x.go", false},
+		{"pkg/testutility/x.go", false},
+		{".tests/x.go", false},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, IsNoisePath(tt.path), tt.path)

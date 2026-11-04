@@ -15,7 +15,10 @@ type RouteFilter struct {
 	Path     string // optional: filter by path pattern (substring match)
 	FilePath string // optional: filter by file path
 	Kind     string // optional: "definition" or "call_site"
-	Limit    int    // max results (default 50)
+	Limit    int    // max results (default 50, at most 200)
+	// Unlimited returns every matching route and ignores Limit, for callers
+	// that filter the routes themselves before capping them (extract).
+	Unlimited bool
 }
 
 // BatchInsertRoutes inserts multiple routes in a single transaction.
@@ -84,6 +87,9 @@ func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter
 	}
 	if filter.Limit > 200 {
 		filter.Limit = 200
+	}
+	if filter.Unlimited {
+		filter.Limit = -1 // SQLite: a negative LIMIT means no limit
 	}
 
 	var conditions []string

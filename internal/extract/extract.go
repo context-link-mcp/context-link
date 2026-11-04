@@ -36,8 +36,10 @@ const (
 	// MaxDependencyReservePercent caps Options.DependencyReservePercent so
 	// matches always keep part of the budget.
 	MaxDependencyReservePercent = 90
-	defaultTopKPerQuery         = 10
-	minSimilarity               = 0.3
+	// MaxEntryPoints caps Result.EntryPoints; a warning reports the rest.
+	MaxEntryPoints      = 200
+	defaultTopKPerQuery = 10
+	minSimilarity       = 0.3
 	// entryPointBoost lifts entry-point handlers in the threat-model profile.
 	// RRF scores are ~1/(60+rank) ≈ 0.016, so this is about two top ranks.
 	entryPointBoost = 0.03
@@ -221,8 +223,9 @@ func Run(
 			fmt.Sprintf("%d files failed to index and are missing from the context", len(index.ParseFailures)))
 	}
 
-	// Entry points (routes) first: they are the attack surface.
-	routes, err := store.FindRoutes(ctx, db, opts.RepoName, store.RouteFilter{Kind: "definition", Limit: 200})
+	// Entry points (routes) first: they are the attack surface. All of them
+	// are loaded: noise files are dropped before the output is capped.
+	routes, err := store.FindRoutes(ctx, db, opts.RepoName, store.RouteFilter{Kind: "definition", Unlimited: true})
 	if err != nil {
 		return nil, fmt.Errorf("extract: failed to load routes: %w", err)
 	}
@@ -266,7 +269,15 @@ func Run(
 		return nil, fmt.Errorf("extract: failed to load symbols: %w", err)
 	}
 
-	res.EntryPoints = buildEntryPoints(ctx, db, opts, routes)
+	var omitted int
+	res.EntryPoints, omitted, err = buildEntryPoints(ctx, db, opts, routes)
+	if err != nil {
+		return nil, err
+	}
+	if omitted > 0 {
+		res.Warnings = append(res.Warnings,
+			fmt.Sprintf("%d more entry points were omitted (limit %d)", omitted, MaxEntryPoints))
+	}
 
 	candidates, excluded := groupByFile(symbols, scores, opts)
 	if excluded > 0 {
@@ -317,21 +328,49 @@ func fillIndexInfo(ctx context.Context, db *store.DB, repo string, info *IndexIn
 }
 
 // buildEntryPoints converts stored routes to entry points, skipping test
-// files unless asked, and resolving handler names.
-func buildEntryPoints(ctx context.Context, db *store.DB, opts Options, routes []models.Route) []EntryPoint {
-	var handlerIDs []int64
-	for _, r := range routes {
-		if r.HandlerSymbolID != nil {
-			handlerIDs = append(handlerIDs, *r.HandlerSymbolID)
-		}
-	}
-	handlers, _ := store.GetSymbolsByIDs(ctx, db, opts.RepoName, handlerIDs)
-
-	out := make([]EntryPoint, 0, len(routes))
+// files unless asked, and resolving handler names. It returns at most
+// MaxEntryPoints, ordered by file, line, method and path, and how many it
+// left out.
+func buildEntryPoints(ctx context.Context, db *store.DB, opts Options, routes []models.Route) ([]EntryPoint, int, error) {
+	kept := make([]models.Route, 0, len(routes))
 	for _, r := range routes {
 		if !opts.IncludeTests && IsNoisePath(r.FilePath) {
 			continue
 		}
+		kept = append(kept, r)
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		a, b := kept[i], kept[j]
+		if a.FilePath != b.FilePath {
+			return a.FilePath < b.FilePath
+		}
+		if a.StartLine != b.StartLine {
+			return a.StartLine < b.StartLine
+		}
+		if a.Method != b.Method {
+			return a.Method < b.Method
+		}
+		return a.PathPattern < b.PathPattern
+	})
+	omitted := 0
+	if len(kept) > MaxEntryPoints {
+		omitted = len(kept) - MaxEntryPoints
+		kept = kept[:MaxEntryPoints]
+	}
+
+	var handlerIDs []int64
+	for _, r := range kept {
+		if r.HandlerSymbolID != nil {
+			handlerIDs = append(handlerIDs, *r.HandlerSymbolID)
+		}
+	}
+	handlers, err := store.GetSymbolsByIDs(ctx, db, opts.RepoName, handlerIDs)
+	if err != nil {
+		return nil, 0, fmt.Errorf("extract: failed to load route handlers: %w", err)
+	}
+
+	out := make([]EntryPoint, 0, len(kept))
+	for _, r := range kept {
 		ep := EntryPoint{
 			Method: r.Method, Path: r.PathPattern, File: r.FilePath,
 			Line: r.StartLine, Framework: r.Framework,
@@ -341,13 +380,7 @@ func buildEntryPoints(ctx context.Context, db *store.DB, opts Options, routes []
 		}
 		out = append(out, ep)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].File != out[j].File {
-			return out[i].File < out[j].File
-		}
-		return out[i].Line < out[j].Line
-	})
-	return out
+	return out, omitted, nil
 }
 
 // fileCandidate is a file with its best-scoring symbols, ready to pack.
@@ -378,7 +411,7 @@ func groupByFile(symbols map[int64]models.Symbol, scores map[int64]*scored, opts
 			if si != sj {
 				return si > sj
 			}
-			return syms[i].StartLine < syms[j].StartLine
+			return lineLess(syms[i], syms[j])
 		})
 		if len(syms) > opts.MaxSymbolsPerFile {
 			syms = syms[:opts.MaxSymbolsPerFile]
@@ -399,6 +432,20 @@ func groupByFile(symbols map[int64]models.Symbol, scores map[int64]*scored, opts
 		return candidates[i].path < candidates[j].path
 	})
 	return candidates, excluded
+}
+
+// lineLess orders symbols of one file by position. Symbols starting on the
+// same line (a class and its first method on one line, same-name overloads)
+// are ordered by qualified name, then ID, so that ties never depend on map
+// iteration order.
+func lineLess(a, b models.Symbol) bool {
+	if a.StartLine != b.StartLine {
+		return a.StartLine < b.StartLine
+	}
+	if a.QualifiedName != b.QualifiedName {
+		return a.QualifiedName < b.QualifiedName
+	}
+	return a.ID < b.ID
 }
 
 // packedFile is a file entry under construction.
@@ -450,7 +497,7 @@ func pack(
 	// within limit, and reports whether they did.
 	packMatch := func(c fileCandidate, limit int) bool {
 		syms := append([]models.Symbol(nil), c.symbols...)
-		sort.Slice(syms, func(i, j int) bool { return syms[i].StartLine < syms[j].StartLine })
+		sort.Slice(syms, func(i, j int) bool { return lineLess(syms[i], syms[j]) })
 		size := 0
 		for i, s := range syms {
 			if i > 0 {
@@ -517,7 +564,7 @@ func pack(
 						byPath[d.FilePath] = f
 					}
 					f.syms = append(f.syms, d)
-					sort.SliceStable(f.syms, func(i, j int) bool { return f.syms[i].StartLine < f.syms[j].StartLine })
+					sort.Slice(f.syms, func(i, j int) bool { return lineLess(f.syms[i], f.syms[j]) })
 					f.roles[d.ID] = RoleDependency
 					packed[d.ID] = true
 					depIDs = append(depIDs, d.ID)
@@ -651,8 +698,27 @@ func round(f float64) float64 {
 var noiseDirs = map[string]bool{
 	"test": true, "tests": true, "__tests__": true, "spec": true, "specs": true,
 	"e2e": true, "fixtures": true, "fixture": true, "testdata": true,
-	"mocks": true, "__mocks__": true, "vendor": true, "node_modules": true,
+	"mock": true, "mocks": true, "__mocks__": true, "testutil": true, "testutils": true,
+	"vendor": true, "node_modules": true,
 	"third_party": true, "migrations": true, "alembic": true,
+}
+
+// isNoiseDir reports whether a lower-cased directory name holds tests,
+// fixtures, vendored code or migrations: a name in noiseDirs, or a .NET-style
+// test project whose last dotted part is a test word ("MyApp.Tests",
+// "MyApp.UnitTests", "MyApp.Specs"). A dot is required, so ordinary names
+// that merely end in "test" ("latest", "contest") do not match.
+func isNoiseDir(dir string) bool {
+	if noiseDirs[dir] {
+		return true
+	}
+	dot := strings.LastIndexByte(dir, '.')
+	if dot <= 0 {
+		return false
+	}
+	last := dir[dot+1:]
+	return last == "test" || last == "tests" || last == "spec" || last == "specs" ||
+		strings.HasSuffix(last, "tests") // unittests, integrationtests, ...
 }
 
 // IsNoisePath reports whether a repo-relative path is a test, fixture,
@@ -661,13 +727,15 @@ func IsNoisePath(path string) bool {
 	p := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
 	segments := strings.Split(p, "/")
 	for _, dir := range segments[:len(segments)-1] {
-		if noiseDirs[dir] {
+		if isNoiseDir(dir) {
 			return true
 		}
 	}
 	base := segments[len(segments)-1]
 	switch {
 	case base == "conftest.py",
+		base == "tests.py", // Django app tests
+
 		strings.HasPrefix(base, "test_"),
 		strings.Contains(base, "_test."),
 		strings.Contains(base, ".test."),
