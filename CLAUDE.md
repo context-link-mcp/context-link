@@ -77,6 +77,9 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 - Structured JSON responses, never plain text
 - Input validation before processing
 - `metadata.timing_ms` field on every response
+- Symbol names resolve through `store.ResolveSymbol` (exact name → exact qualified name → unique substring only if the tool allows fuzzy, reported as `match_type: "fuzzy"`); write tools (`save_symbol_memory`) never accept a fuzzy match. Escape user text in `LIKE` with `store.EscapeLike` + `ESCAPE '\'`
+- Empty lists are `[]`, never `null`; capped results carry a `truncated` flag
+- `IN (...)` over caller-supplied IDs goes through `store.forEachIDChunk` (SQLite allows 32,766 parameters)
 - Standard MCP error codes
 
 ### Testing
