@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Standard BERT special token IDs (consistent with HuggingFace vocab.txt).
@@ -33,6 +36,8 @@ type BERTTokenizer struct {
 	unkID    int64
 	clsID    int64
 	sepID    int64
+	maskID   int64
+	hasMask  bool
 }
 
 // NewBERTTokenizerFromFile loads vocabulary from a vocab.txt file.
@@ -85,6 +90,9 @@ func newBERTTokenizer(vocab map[string]int64, maxChars int) *BERTTokenizer {
 	}
 	if id, ok := vocab["[SEP]"]; ok {
 		t.sepID = id
+	}
+	if id, ok := vocab["[MASK]"]; ok {
+		t.maskID, t.hasMask = id, true
 	}
 	return t
 }
@@ -140,9 +148,98 @@ func (t *BERTTokenizer) Tokenize(text string, maxLen int) TokenizerOutput {
 	}
 }
 
-// basicTokenize lowercases text and splits on whitespace and punctuation.
+// IsSpecial reports whether id is one of the tokenizer's special tokens
+// ([PAD], [UNK], [CLS], [SEP], [MASK]). Special tokens carry no content, so
+// pooling over them makes unrelated inputs look alike.
+func (t *BERTTokenizer) IsSpecial(id int64) bool {
+	return id == t.padID || id == t.unkID || id == t.clsID || id == t.sepID || (t.hasMask && id == t.maskID)
+}
+
+// ContentTokens returns how many tokens of out are real vocabulary tokens,
+// i.e. attended and not special. Zero means the input had nothing the model
+// knows (empty, or every word mapped to [UNK]).
+func (t *BERTTokenizer) ContentTokens(out TokenizerOutput) int {
+	n := 0
+	for i, mask := range out.AttentionMask {
+		if mask == 0 {
+			break
+		}
+		if !t.IsSpecial(out.InputIDs[i]) {
+			n++
+		}
+	}
+	return n
+}
+
+// normalize applies the BERT BasicTokenizer normalisation used by uncased
+// models (HF BertNormalizer with clean_text, handle_chinese_chars and
+// lowercase, strip_accents following lowercase):
+//   - drops NUL, U+FFFD and control/format characters, maps whitespace to ' '
+//   - puts spaces around CJK ideographs so each becomes its own word
+//   - lowercases, decomposes to NFD and strips combining marks ("café" → "cafe")
+func normalize(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == 0 || r == utf8.RuneError:
+			continue
+		case isBERTWhitespace(r):
+			b.WriteByte(' ')
+		case isBERTControl(r):
+			continue
+		case isCJK(r):
+			b.WriteByte(' ')
+			b.WriteRune(r)
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	lowered := strings.ToLower(b.String())
+
+	var out strings.Builder
+	out.Grow(len(lowered))
+	for _, r := range norm.NFD.String(lowered) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// isBERTWhitespace mirrors BERT's _is_whitespace: \t, \n, \r and Unicode Zs.
+func isBERTWhitespace(r rune) bool {
+	if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
+}
+
+// isBERTControl mirrors BERT's _is_control: Cc and Cf, except the whitespace
+// characters handled above.
+func isBERTControl(r rune) bool {
+	return unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r)
+}
+
+// isCJK reports whether r is in the CJK Unified Ideographs blocks BERT splits
+// on (Hangul, Hiragana and Katakana are not included, as in BERT).
+func isCJK(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3400 && r <= 0x4DBF) ||
+		(r >= 0x20000 && r <= 0x2A6DF) ||
+		(r >= 0x2A700 && r <= 0x2B73F) ||
+		(r >= 0x2B740 && r <= 0x2B81F) ||
+		(r >= 0x2B820 && r <= 0x2CEAF) ||
+		(r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0x2F800 && r <= 0x2FA1F)
+}
+
+// basicTokenize normalises text (see normalize) and splits it on whitespace
+// and punctuation.
 func (t *BERTTokenizer) basicTokenize(text string) []string {
-	text = strings.ToLower(text)
+	text = normalize(text)
 	var words []string
 	var cur strings.Builder
 
@@ -176,7 +273,7 @@ func isPunct(r rune) bool {
 // wordpieceTokenize applies WordPiece subword tokenization to a single word.
 // Returns ["[UNK]"] if the word cannot be segmented.
 func (t *BERTTokenizer) wordpieceTokenize(word string) []string {
-	if len(word) > t.maxChars {
+	if utf8.RuneCountInString(word) > t.maxChars {
 		return []string{"[UNK]"}
 	}
 	// Fast path: whole word is in vocab.

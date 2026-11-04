@@ -97,8 +97,8 @@
           "dependencies": []
         }
       ],
-      "reason": "entry point: GET /api/users/{user_id}",
-      "score": 0.202,
+      "reason": "query: input validation sanitization user data",
+      "score": 0.267,
       "content": "def login(body: dict):\n    \"\"\"Authenticate a user and return a session token.\"\"\"\n    return {\"token\": hash_password(body[\"password\"], \"salt\")}\n\ndef get_user(user_id: int, token: str = Depends(verify_token)):\n    \"\"\"Return a user record; requires a valid token.\"\"\"\n    return {\"id\": user_id}\n\ndef list_routes():\n    return []"
     },
     {
@@ -127,7 +127,7 @@
         }
       ],
       "reason": "query: user authentication token",
-      "score": 0.093,
+      "score": 0.109,
       "content": "def hash_password(password: str, salt: str) -\u003e str:\n    \"\"\"Hash a password with a salt for storage.\"\"\"\n    return hashlib.sha256((salt + password).encode()).hexdigest()\n\ndef verify_token(token: str) -\u003e bool:\n    \"\"\"Check an authentication token against the session store.\"\"\"\n    return token.startswith(\"abc\")"
     },
     {

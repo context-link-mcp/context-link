@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -30,26 +32,24 @@ func ensureORTEnvironment(libPath string) error {
 
 // ONNXEmbedder generates embeddings using all-MiniLM-L6-v2 via OnnxRuntime.
 //
-// The model, tokenizer, and ORT session are initialized lazily on the first
-// call to EmbedOne or EmbedBatch. The session is reused across calls by
+// The model, tokenizer, and ORT session are initialized eagerly by
+// NewONNXEmbedder, so a misconfiguration surfaces at startup instead of as
+// an index run with zero embeddings. The session is reused across calls by
 // updating pre-allocated input tensor data in-place before each Run().
 type ONNXEmbedder struct {
-	mu   sync.Mutex
-	once sync.Once
-	err  error
+	mu sync.Mutex
 
 	modelPath string
 	vocabPath string
 	libPath   string
 
-	// Lazily initialized fields below.
 	tokenizer *BERTTokenizer
 
 	// Pre-allocated input data slices (shapes [1, MaxSeqLen]).
 	// Tensors wrap these slices; updating the slices updates tensor data.
-	inputIDs  []int64
-	attMasks  []int64
-	typeIDs   []int64
+	inputIDs []int64
+	attMasks []int64
+	typeIDs  []int64
 
 	idTensor   *ort.Tensor[int64]
 	maskTensor *ort.Tensor[int64]
@@ -58,8 +58,10 @@ type ONNXEmbedder struct {
 	session    *ort.AdvancedSession
 }
 
-// NewONNXEmbedder creates an ONNXEmbedder that will lazily initialize the
-// ORT session on first use.
+// NewONNXEmbedder creates an ONNXEmbedder and initializes it immediately:
+// it checks that the model and vocab files exist, loads the vocabulary and
+// the OnnxRuntime library, creates the session and runs one test embedding.
+// Any failure is returned here, never deferred to the first EmbedOne call.
 //
 //   - modelPath: path to the all-MiniLM-L6-v2.onnx file.
 //   - vocabPath: path to the accompanying vocab.txt file.
@@ -69,11 +71,54 @@ func NewONNXEmbedder(modelPath, vocabPath, libPath string) (*ONNXEmbedder, error
 	if modelPath == "" || vocabPath == "" {
 		return nil, ErrModelNotConfigured
 	}
-	return &ONNXEmbedder{
+	for _, p := range []struct{ what, path string }{{"model", modelPath}, {"vocab", vocabPath}} {
+		info, err := os.Stat(p.path)
+		if err != nil {
+			return nil, fmt.Errorf("vectorstore: ONNX %s file: %w", p.what, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("vectorstore: ONNX %s path %s is a directory", p.what, p.path)
+		}
+	}
+	e := &ONNXEmbedder{
 		modelPath: modelPath,
 		vocabPath: vocabPath,
 		libPath:   libPath,
-	}, nil
+	}
+	if err := e.initialize(); err != nil {
+		e.Close() //nolint:errcheck
+		return nil, err
+	}
+	// A test embedding catches models whose inputs/outputs or shape differ
+	// from all-MiniLM-L6-v2, which session creation alone does not.
+	if _, err := e.inferOne("context-link onnx self test"); err != nil {
+		e.Close() //nolint:errcheck
+		return nil, fmt.Errorf("vectorstore: ONNX test embedding: %w", err)
+	}
+	return e, nil
+}
+
+// NewConfiguredEmbedder returns the embedder the configuration asks for:
+// ONNX when both modelPath and vocabPath are set and the model initializes,
+// otherwise the built-in Model2Vec embedder. A configured ONNX model that
+// fails to initialize logs a warning and falls back to Model2Vec, so indexing
+// still produces (128-dim) embeddings instead of none.
+func NewConfiguredEmbedder(modelPath, vocabPath, libPath string) Embedder {
+	if modelPath == "" && vocabPath == "" {
+		return NewModel2VecEmbedder()
+	}
+	if modelPath == "" || vocabPath == "" {
+		slog.Warn("ONNX embedder needs both a model path and a vocab path; using built-in Model2Vec",
+			"model_path", modelPath, "vocab_path", vocabPath)
+		return NewModel2VecEmbedder()
+	}
+	e, err := NewONNXEmbedder(modelPath, vocabPath, libPath)
+	if err != nil {
+		slog.Warn("ONNX embedder failed to initialize, falling back to built-in Model2Vec",
+			"model_path", modelPath, "error", err)
+		return NewModel2VecEmbedder()
+	}
+	return e
 }
 
 // Dim implements Embedder.
@@ -94,14 +139,12 @@ func (e *ONNXEmbedder) Close() error {
 	if e.outTensor != nil {
 		e.outTensor.Destroy() //nolint:errcheck
 	}
+	e.session, e.idTensor, e.maskTensor, e.typeTensor, e.outTensor = nil, nil, nil, nil, nil
 	return nil
 }
 
 // EmbedOne implements Embedder.
 func (e *ONNXEmbedder) EmbedOne(ctx context.Context, text string) ([]float32, error) {
-	if err := e.ensureInitialized(); err != nil {
-		return nil, err
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.inferOne(text)
@@ -110,9 +153,6 @@ func (e *ONNXEmbedder) EmbedOne(ctx context.Context, text string) ([]float32, er
 // EmbedBatch implements Embedder. It processes each text individually and
 // returns embeddings in the same order as the input slice.
 func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	if err := e.ensureInitialized(); err != nil {
-		return nil, err
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -125,14 +165,6 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 		results[i] = emb
 	}
 	return results, nil
-}
-
-// ensureInitialized runs initialization exactly once; returns any init error.
-func (e *ONNXEmbedder) ensureInitialized() error {
-	e.once.Do(func() {
-		e.err = e.initialize()
-	})
-	return e.err
 }
 
 // initialize loads the tokenizer, ORT environment, tensors, and session.
@@ -196,6 +228,14 @@ func (e *ONNXEmbedder) initialize() error {
 // L2-normalized embedding. Must be called with e.mu held.
 func (e *ONNXEmbedder) inferOne(text string) ([]float32, error) {
 	out := e.tokenizer.Tokenize(text, MaxSeqLen)
+
+	// Nothing the model knows (empty, or every word [UNK]): return the zero
+	// vector, as Model2Vec does, instead of a [CLS]/[UNK] embedding that
+	// would look similar for any unknown input. Normal inputs keep the
+	// standard sentence-transformers mean pooling the model was trained with.
+	if e.tokenizer.ContentTokens(out) == 0 {
+		return make([]float32, ONNXModelDim), nil
+	}
 
 	// Update pre-allocated input slices in-place.
 	// The tensors share the underlying array, so ORT sees the new data.

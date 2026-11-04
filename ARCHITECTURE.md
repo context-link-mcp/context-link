@@ -98,18 +98,18 @@ internal/
     extract.go                  # Batch context extraction: multi-query hybrid search, test/fixture filtering, budget packing (code → skeleton), entry points; Result is JSON schema_version 1
   vectorstore/                  # Phase 3: embedding generation + vector search
     embedder.go                 # Embedder interface, MockEmbedder, SymbolEmbedText helper
-    tokenizer.go                # BERT WordPiece tokenizer (lowercase, subword, padding, dynamic special IDs)
+    tokenizer.go                # BERT WordPiece tokenizer (BERT normalisation: clean text, CJK split, lowercase + accent strip; subword, padding, dynamic special IDs)
     hf_tokenizer.go             # HuggingFace tokenizer.json parser (WordPiece subset)
-    model2vec.go                # Model2VecEmbedder (built-in, zero-config, 128-dim potion-base-4M)
+    model2vec.go                # Model2VecEmbedder (built-in, zero-config, 128-dim potion-base-4M; special tokens incl. [UNK] not pooled)
     model2vec_data.go           # //go:embed directives for model2vec/ model files
     safetensors.go              # Pure Go safetensors parser (F32/F16 tensor extraction)
-    onnx.go                     # ONNXEmbedder (optional, lazy ORT session, 384-dim all-MiniLM-L6-v2)
-    vecstore.go                 # UpsertEmbedding, KNNSearch (Go-side dot-product), dimension validation
+    onnx.go                     # ONNXEmbedder (optional, eager init + test embed, 384-dim all-MiniLM-L6-v2); NewConfiguredEmbedder falls back to Model2Vec
+    vecstore.go                 # UpsertEmbedding, KNNSearch (Go-side dot-product, skips wrong-dim/zero vectors, optional allow filter), dimension reconciliation
   tools/
     ping.go                     # Health-check tool (status, version, uptime, runtime info)
     architecture.go             # read_architecture_rules tool (parses ARCHITECTURE.md → JSON sections)
     get_code.go                 # get_code_by_symbol tool (symbol lookup + transitive deps + memories, depth 0-3)
-    semantic_search.go          # semantic_search_symbols tool + exported HybridSearch (embed query → KNN + FTS5 → RRF), reused by `extract`
+    semantic_search.go          # semantic_search_symbols tool + exported HybridSearch (embed query → filtered KNN + per-word OR FTS5 → RRF → min_similarity on every hit), reused by `extract`
     memory.go                   # save_symbol_memory, get_symbol_memories, purge_stale_memories tools
     skeleton.go                 # get_file_skeleton tool (structural outline, signatures only)
     usages.go                   # get_symbol_usages tool (reverse dependency lookup — who calls this?)

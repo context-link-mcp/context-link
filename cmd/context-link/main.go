@@ -166,22 +166,9 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		cfg.ORTLibPath = flagORTLibPath
 	}
 
-	// Create embedder: use ONNX if explicitly configured, otherwise built-in Model2Vec.
-	var embedder vectorstore.Embedder
-	if cfg.ModelPath != "" && cfg.VocabPath != "" {
-		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
-		if err != nil {
-			slog.Warn("ONNX embedder failed, falling back to built-in Model2Vec", "error", err)
-			embedder = vectorstore.NewModel2VecEmbedder()
-		} else {
-			embedder = e
-			defer e.Close() //nolint:errcheck
-			slog.Info("embedding generation enabled (ONNX)", "model", cfg.ModelPath)
-		}
-	} else {
-		embedder = vectorstore.NewModel2VecEmbedder()
-		slog.Info("embedding generation enabled (built-in Model2Vec)")
-	}
+	// Create embedder: ONNX if configured and it initializes, else built-in Model2Vec.
+	embedder, closeEmbedder := newEmbedder(cfg)
+	defer closeEmbedder()
 
 	// Validate embedding dimension matches stored data.
 	if err := vectorstore.EnsureEmbeddingDimension(context.Background(), db, embedder.Dim()); err != nil {
@@ -355,21 +342,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.ORTLibPath = flagORTLibPath
 	}
 
-	// Create embedder: use ONNX if explicitly configured, otherwise built-in Model2Vec.
-	var embedder vectorstore.Embedder
-	if cfg.ModelPath != "" && cfg.VocabPath != "" {
-		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
-		if err != nil {
-			slog.Warn("ONNX embedder failed, falling back to built-in Model2Vec", "error", err)
-			embedder = vectorstore.NewModel2VecEmbedder()
-		} else {
-			embedder = e
-			slog.Info("semantic search enabled (ONNX)", "model", cfg.ModelPath)
-		}
-	} else {
-		embedder = vectorstore.NewModel2VecEmbedder()
-		slog.Info("semantic search enabled (built-in Model2Vec)")
-	}
+	// Create embedder: ONNX if configured and it initializes, else built-in Model2Vec.
+	embedder, closeEmbedder := newEmbedder(cfg)
+	defer closeEmbedder()
 
 	// Validate embedding dimension matches stored data.
 	if err := vectorstore.EnsureEmbeddingDimension(context.Background(), db, embedder.Dim()); err != nil {

@@ -54,8 +54,46 @@
   ],
   "files": [
     {
-      "path": "app/auth.py",
+      "path": "app/main.py",
       "tier": "code",
+      "symbols": [
+        {
+          "name": "login",
+          "qualified_name": "login",
+          "kind": "function",
+          "start_line": 9,
+          "end_line": 11,
+          "offset": 0,
+          "role": "match",
+          "dependencies": [
+            {
+              "name": "hash_password",
+              "qualified_name": "hash_password",
+              "kind": "function",
+              "file": "app/auth.py",
+              "start_line": 4,
+              "end_line": 6
+            }
+          ]
+        },
+        {
+          "name": "get_user",
+          "qualified_name": "get_user",
+          "kind": "function",
+          "start_line": 15,
+          "end_line": 17,
+          "offset": 144,
+          "role": "match",
+          "dependencies": []
+        }
+      ],
+      "reason": "query: user authentication token",
+      "score": 0.048,
+      "content": "def login(body: dict):\n    \"\"\"Authenticate a user and return a session token.\"\"\"\n    return {\"token\": hash_password(body[\"password\"], \"salt\")}\n\ndef get_user(user_id: int, token: str = Depends(verify_token)):\n    \"\"\"Return a user record; requires a valid token.\"\"\"\n    return {\"id\": user_id}"
+    },
+    {
+      "path": "app/auth.py",
+      "tier": "skeleton",
       "symbols": [
         {
           "name": "hash_password",
@@ -73,70 +111,22 @@
           "kind": "function",
           "start_line": 9,
           "end_line": 11,
-          "offset": 170,
+          "offset": 52,
           "role": "match",
           "dependencies": []
         }
       ],
       "reason": "query: user authentication token",
-      "score": 0.032,
-      "content": "def hash_password(password: str, salt: str) -\u003e str:\n    \"\"\"Hash a password with a salt for storage.\"\"\"\n    return hashlib.sha256((salt + password).encode()).hexdigest()\n\ndef verify_token(token: str) -\u003e bool:\n    \"\"\"Check an authentication token against the session store.\"\"\"\n    return token.startswith(\"abc\")"
-    },
-    {
-      "path": "app/main.py",
-      "tier": "skeleton",
-      "symbols": [
-        {
-          "name": "router",
-          "qualified_name": "router",
-          "kind": "variable",
-          "start_line": 5,
-          "end_line": 5,
-          "offset": 0,
-          "role": "outline",
-          "dependencies": []
-        },
-        {
-          "name": "login",
-          "qualified_name": "login",
-          "kind": "function",
-          "start_line": 9,
-          "end_line": 11,
-          "offset": 34,
-          "role": "match",
-          "dependencies": []
-        },
-        {
-          "name": "get_user",
-          "qualified_name": "get_user",
-          "kind": "function",
-          "start_line": 15,
-          "end_line": 17,
-          "offset": 57,
-          "role": "match",
-          "dependencies": []
-        },
-        {
-          "name": "list_routes",
-          "qualified_name": "list_routes",
-          "kind": "function",
-          "start_line": 21,
-          "end_line": 22,
-          "offset": 121,
-          "role": "outline",
-          "dependencies": []
-        }
-      ],
-      "reason": "query: user authentication token",
-      "score": 0.031,
-      "content": "router = APIRouter(prefix=\"/api\")\ndef login(body: dict):\ndef get_user(user_id: int, token: str = Depends(verify_token)):\ndef list_routes():"
+      "score": 0.048,
+      "content": "def hash_password(password: str, salt: str) -\u003e str:\ndef verify_token(token: str) -\u003e bool:"
     }
   ],
   "budget": {
     "limit_bytes": 450,
-    "used_bytes": 448
+    "used_bytes": 379
   },
   "warnings": [
-    "1 matches in tests, fixtures, vendored code or migrations were excluded (use --include-tests)"
+    "1 matches in tests, fixtures, vendored code or migrations were excluded (use --include-tests)",
+    "1 dependencies did not fit the budget (listed as references only)"
   ]
 }

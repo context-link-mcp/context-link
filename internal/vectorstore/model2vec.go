@@ -12,10 +12,10 @@ const Model2VecDim = 128
 
 // Model2VecConfig holds parsed config.json for a Model2Vec model.
 type Model2VecConfig struct {
-	HiddenDim  int  `json:"hidden_dim"`
-	Normalize  bool `json:"normalize"`
-	ApplyZipf  bool `json:"apply_zipf"`
-	SeqLength  int  `json:"seq_length"`
+	HiddenDim int  `json:"hidden_dim"`
+	Normalize bool `json:"normalize"`
+	ApplyZipf bool `json:"apply_zipf"`
+	SeqLength int  `json:"seq_length"`
 }
 
 // Model2VecEmbedder generates embeddings using static Model2Vec word embeddings.
@@ -26,9 +26,9 @@ type Model2VecEmbedder struct {
 	err  error
 
 	// Raw data for lazy init.
-	rawSafetensors  []byte
+	rawSafetensors   []byte
 	rawTokenizerJSON []byte
-	rawConfigJSON   []byte
+	rawConfigJSON    []byte
 
 	// Initialized on first use.
 	tokenizer  *BERTTokenizer
@@ -149,9 +149,12 @@ func (e *Model2VecEmbedder) embedOne(text string) []float32 {
 		}
 		tokenID := out.InputIDs[i]
 
-		// Skip [CLS] and [SEP] special tokens — they don't contribute
-		// meaningful content to the embedding.
-		if tokenID == e.tokenizer.clsID || tokenID == e.tokenizer.sepID {
+		// Skip special tokens ([CLS], [SEP], [UNK], ...): they carry no
+		// content. Pooling [UNK] in made every unknown word the same vector,
+		// so unrelated non-ASCII inputs scored ~1.0 against each other. An
+		// input with no known tokens stays the zero vector, which matches
+		// nothing (KNN skips zero queries).
+		if e.tokenizer.IsSpecial(tokenID) {
 			continue
 		}
 

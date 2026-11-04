@@ -184,15 +184,15 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(res)
 }
 
-// newEmbedder returns the ONNX embedder when configured, else the built-in
-// Model2Vec one, plus a cleanup func.
+// newEmbedder returns the ONNX embedder when configured and it initializes,
+// else the built-in Model2Vec one (see vectorstore.NewConfiguredEmbedder),
+// plus a cleanup func. Shared by index, serve and extract.
 func newEmbedder(cfg *config.Config) (vectorstore.Embedder, func()) {
-	if cfg.ModelPath != "" && cfg.VocabPath != "" {
-		e, err := vectorstore.NewONNXEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
-		if err == nil {
-			return e, func() { _ = e.Close() }
-		}
-		slog.Warn("ONNX embedder failed, falling back to built-in Model2Vec", "error", err)
+	e := vectorstore.NewConfiguredEmbedder(cfg.ModelPath, cfg.VocabPath, cfg.ORTLibPath)
+	if _, ok := e.(*vectorstore.ONNXEmbedder); ok {
+		slog.Info("embeddings: ONNX model", "model", cfg.ModelPath)
+	} else {
+		slog.Info("embeddings: built-in Model2Vec")
 	}
-	return vectorstore.NewModel2VecEmbedder(), func() {}
+	return e, func() { _ = e.Close() }
 }
