@@ -42,13 +42,36 @@ type Config struct {
 	Tools []string `mapstructure:"tools"`
 }
 
-// Load reads the configuration from the config file and environment variables.
+// DefaultDBFile is the database file name used when no db_path is given; it
+// is created in the project root (see DBPathFor).
+const DefaultDBFile = ".context-link.db"
+
+// envPrefix prefixes the environment variable of every config key, e.g.
+// CONTEXT_LINK_MODEL_PATH for model_path.
+const envPrefix = "CONTEXT_LINK"
+
+// configKeys lists every key read from the config file and environment.
+// Each is bound to its environment variable explicitly: viper's AutomaticEnv
+// alone only applies to keys viper already knows from a default or the
+// config file, so e.g. CONTEXT_LINK_MODEL_PATH was silently ignored.
+var configKeys = []string{
+	"db_path", "project_root", "log_level",
+	"model_path", "vocab_path", "ort_lib_path",
+	"tools",
+}
+
+// Load reads the configuration from the config file and environment variables
+// (CONTEXT_LINK_<KEY>, e.g. CONTEXT_LINK_DB_PATH; CONTEXT_LINK_TOOLS is a
+// comma-separated list). Environment variables override the config file.
 // CLI flag values can be applied after loading by directly setting fields.
+//
+// DBPath is left empty unless db_path is set; callers resolve the default
+// against the project root with DBPathFor. A relative db_path is resolved
+// against the working directory.
 func Load(cfgFile string) (*Config, error) {
 	v := viper.New()
 
 	// Set defaults.
-	v.SetDefault("db_path", ".context-link.db")
 	v.SetDefault("log_level", "info")
 
 	// Determine project root default: current working directory.
@@ -69,8 +92,12 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	// Allow environment variable overrides prefixed with CONTEXT_LINK_.
-	v.SetEnvPrefix("CONTEXT_LINK")
-	v.AutomaticEnv()
+	v.SetEnvPrefix(envPrefix)
+	for _, key := range configKeys {
+		if err := v.BindEnv(key); err != nil {
+			return nil, fmt.Errorf("config: failed to bind environment variable for %s: %w", key, err)
+		}
+	}
 
 	// Read config file (ignore not-found errors — it's optional).
 	if err := v.ReadInConfig(); err != nil {
@@ -84,8 +111,8 @@ func Load(cfgFile string) (*Config, error) {
 		return nil, fmt.Errorf("config: failed to unmarshal config: %w", err)
 	}
 
-	// Resolve DB path relative to working dir if it is not absolute.
-	if !filepath.IsAbs(cfg.DBPath) {
+	// An explicit relative DB path is resolved against the working dir.
+	if cfg.DBPath != "" && !filepath.IsAbs(cfg.DBPath) {
 		cfg.DBPath = filepath.Join(cwd, cfg.DBPath)
 	}
 
@@ -98,6 +125,17 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// DBPathFor returns dbPath if it is set (from --db-path, the config file or
+// CONTEXT_LINK_DB_PATH), else DefaultDBFile in the resolved project root, so
+// that index, serve and extract use the same database for a project whatever
+// the working directory.
+func DBPathFor(dbPath, projectRoot string) string {
+	if dbPath != "" {
+		return dbPath
+	}
+	return filepath.Join(projectRoot, DefaultDBFile)
 }
 
 // ResolveProject returns the absolute, cleaned project root and the repo name
