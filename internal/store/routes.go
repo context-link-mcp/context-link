@@ -150,7 +150,10 @@ func SetRouteHandlers(ctx context.Context, db *DB, repoName string, handlers map
 	return nil
 }
 
-// FindRoutes retrieves routes matching the given filter.
+// FindRoutes retrieves routes matching the given filter, ordered by method,
+// normalized path, file path, start line and ID, so equal routes (the same
+// endpoint registered in several files or lines) come back, and are cut by
+// the limit, in a fixed order.
 func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter) ([]models.Route, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 50
@@ -195,7 +198,7 @@ func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter
 		        file_path, start_line, framework, kind
 		 FROM routes
 		 WHERE %s
-		 ORDER BY method, normalized_path
+		 ORDER BY method, normalized_path, file_path, start_line, id
 		 LIMIT ?`,
 		strings.Join(conditions, " AND "),
 	)

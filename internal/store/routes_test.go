@@ -333,6 +333,54 @@ func TestFindRoutes_LimitEnforcement(t *testing.T) {
 	assert.LessOrEqual(t, len(foundRoutes), 200, "limit should cap at 200")
 }
 
+// TestFindRoutes_TieBreak: routes with the same method and normalized path
+// are ordered by file path, start line, then ID, whatever their insertion
+// order (master left ties in row order, so the limit cut an arbitrary one).
+func TestFindRoutes_TieBreak(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	route := func(file string, line int, framework string) models.Route {
+		return models.Route{
+			RepoName: "repo", Method: "GET", PathPattern: "/users/:id", NormalizedPath: "/users/:param",
+			FilePath: file, StartLine: line, Framework: framework, Kind: "definition",
+		}
+	}
+	// Inserted in reverse of the expected order; the two a.go:2 rows differ
+	// only by ID (framework marks which is which).
+	require.NoError(t, BatchInsertRoutes(ctx, db, []models.Route{
+		route("b.go", 5, "gin"),
+		route("a.go", 9, "gin"),
+		route("a.go", 2, "first"),
+		route("a.go", 2, "second"),
+	}))
+
+	key := func(rs []models.Route) []string {
+		out := make([]string, 0, len(rs))
+		for _, r := range rs {
+			out = append(out, fmt.Sprintf("%s:%d:%s", r.FilePath, r.StartLine, r.Framework))
+		}
+		return out
+	}
+	tests := []struct {
+		name  string
+		limit int
+		want  []string
+	}{
+		{"all", 0, []string{"a.go:2:first", "a.go:2:second", "a.go:9:gin", "b.go:5:gin"}},
+		{"limit cuts the last", 2, []string{"a.go:2:first", "a.go:2:second"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := FindRoutes(ctx, db, "repo", RouteFilter{Limit: tc.limit})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, key(got))
+		})
+	}
+}
+
 func TestMatchRoutes_ExactMatch(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
