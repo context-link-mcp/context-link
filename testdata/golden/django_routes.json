@@ -1,0 +1,197 @@
+[
+  {
+    "method": "ALL",
+    "path": "/v1/users/",
+    "normalized_path": "/v1/users/",
+    "framework": "django-rest-framework",
+    "file": "api/urls.py",
+    "line": 7,
+    "handler_name": "UserViewSet",
+    "handler": "api/views.py:UserViewSet"
+  },
+  {
+    "method": "ALL",
+    "path": "/v1/users/\u003cpk\u003e/",
+    "normalized_path": "/v1/users/:param/",
+    "framework": "django-rest-framework",
+    "file": "api/urls.py",
+    "line": 7,
+    "handler_name": "UserViewSet",
+    "handler": "api/views.py:UserViewSet"
+  },
+  {
+    "method": "ALL",
+    "path": "/v1/groups/",
+    "normalized_path": "/v1/groups/",
+    "framework": "django-rest-framework",
+    "file": "api/urls.py",
+    "line": 8,
+    "handler_name": "GroupViewSet",
+    "handler": "api/views.py:GroupViewSet"
+  },
+  {
+    "method": "ALL",
+    "path": "/v1/groups/\u003cpk\u003e/",
+    "normalized_path": "/v1/groups/:param/",
+    "framework": "django-rest-framework",
+    "file": "api/urls.py",
+    "line": 8,
+    "handler_name": "GroupViewSet",
+    "handler": "api/views.py:GroupViewSet"
+  },
+  {
+    "method": "ALL",
+    "path": "/status/",
+    "normalized_path": "/status/",
+    "framework": "django",
+    "file": "api/urls.py",
+    "line": 12,
+    "handler_name": "status",
+    "handler": "api/views.py:status"
+  },
+  {
+    "method": "ALL",
+    "path": "/",
+    "normalized_path": "/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 12,
+    "handler_name": "index",
+    "handler": "blog/views.py:index"
+  },
+  {
+    "method": "ALL",
+    "path": "/articles/\u003cint:year\u003e/",
+    "normalized_path": "/articles/:param/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 13,
+    "handler_name": "year_archive",
+    "handler": "blog/views.py:year_archive"
+  },
+  {
+    "method": "ALL",
+    "path": "/articles/\u003cint:year\u003e/\u003cslug:slug\u003e/",
+    "normalized_path": "/articles/:param/:param/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 14,
+    "handler_name": "ArticleDetail",
+    "handler": "blog/views.py:ArticleDetail"
+  },
+  {
+    "method": "ALL",
+    "path": "/archive/",
+    "normalized_path": "/archive/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 15,
+    "handler_name": "ArchiveView",
+    "handler": "blog/views.py:ArchiveView"
+  },
+  {
+    "method": "ALL",
+    "path": "/files/\u003cpath:name\u003e",
+    "normalized_path": "/files/*",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 16,
+    "handler_name": "serve_file",
+    "handler": "blog/views.py:serve_file"
+  },
+  {
+    "method": "ALL",
+    "path": "/^feeds/(?P\u003cfeed\u003e[\\w-]+)/$",
+    "normalized_path": "/feeds/:param/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 17,
+    "handler_name": "feed",
+    "handler": "blog/views.py:feed"
+  },
+  {
+    "method": "ALL",
+    "path": "/^raw/(?P\u003crest\u003e.*)$",
+    "normalized_path": "/raw/*",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 18,
+    "handler_name": "serve_file",
+    "handler": "blog/views.py:serve_file"
+  },
+  {
+    "method": "ALL",
+    "path": "/^legacy/(\\d+)/$",
+    "normalized_path": "/^legacy/(\\d+)/$",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 19,
+    "handler_name": "legacy",
+    "handler": "blog/views.py:legacy"
+  },
+  {
+    "method": "ALL",
+    "path": "/about/",
+    "normalized_path": "/about/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 20,
+    "handler_name": "TemplateView"
+  },
+  {
+    "method": "ALL",
+    "path": "/private/",
+    "normalized_path": "/private/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 21
+  },
+  {
+    "method": "ALL",
+    "path": "/drafts/",
+    "normalized_path": "/drafts/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 25,
+    "handler_name": "drafts",
+    "handler": "blog/views.py:drafts"
+  },
+  {
+    "method": "ALL",
+    "path": "/drafts/\u003cint:pk\u003e/",
+    "normalized_path": "/drafts/:param/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 26,
+    "handler_name": "draft_detail",
+    "handler": "blog/views.py:draft_detail"
+  },
+  {
+    "method": "ALL",
+    "path": "/^old-feed/$",
+    "normalized_path": "/old-feed/",
+    "framework": "django",
+    "file": "blog/urls.py",
+    "line": 32,
+    "handler_name": "feed",
+    "handler": "blog/views.py:feed"
+  },
+  {
+    "method": "ALL",
+    "path": "/healthz/",
+    "normalized_path": "/healthz/",
+    "framework": "django",
+    "file": "mysite/urls.py",
+    "line": 15,
+    "handler_name": "healthz",
+    "handler": "mysite/urls.py:healthz"
+  },
+  {
+    "method": "ALL",
+    "path": "/ping/",
+    "normalized_path": "/ping/",
+    "framework": "django",
+    "file": "mysite/urls.py",
+    "line": 16
+  }
+]
