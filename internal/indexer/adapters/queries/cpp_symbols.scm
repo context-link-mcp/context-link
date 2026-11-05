@@ -11,13 +11,37 @@
 ) @symbol.function
 
 ; === Qualified function definitions (member functions defined outside class) ===
-; int Foo::bar() { ... }
+; int Foo::bar() { ... }, ns::Foo::bar, Foo<T>::bar, Foo::~Foo, Foo::operator==,
+; int* Foo::bar(), Foo& Foo::bar(). The whole qualified_identifier is the name:
+; the extractor splits it into the last scope segment and the member name.
 (function_definition
-  declarator: (function_declarator
-    declarator: (qualified_identifier
-      name: (identifier) @symbol.name
-    )
-  )
+  declarator: [
+    (function_declarator
+      declarator: (qualified_identifier) @symbol.name)
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (qualified_identifier) @symbol.name))
+    (reference_declarator
+      (function_declarator
+        declarator: (qualified_identifier) @symbol.name))
+  ]
+  body: (compound_statement) @symbol.body
+) @symbol.method
+
+; === Member functions defined inside the class body ===
+; class Foo { int bar() { ... } ~Foo() { ... } bool operator==(...) { ... } int* p() { ... } };
+; (Constructors are plain identifiers and match the function pattern above.)
+(function_definition
+  declarator: [
+    (function_declarator
+      declarator: [(field_identifier) (destructor_name) (operator_name)] @symbol.name)
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: [(field_identifier) (destructor_name) (operator_name)] @symbol.name))
+    (reference_declarator
+      (function_declarator
+        declarator: [(field_identifier) (destructor_name) (operator_name)] @symbol.name))
+  ]
   body: (compound_statement) @symbol.body
 ) @symbol.method
 

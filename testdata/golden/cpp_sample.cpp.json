@@ -1,0 +1,154 @@
+[
+  {
+    "name": "Counter",
+    "qualified_name": "Counter",
+    "kind": "class",
+    "language": "cpp",
+    "start_line": 4,
+    "end_line": 16
+  },
+  {
+    "name": "Counter",
+    "qualified_name": "Counter.Counter",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 6,
+    "end_line": 6
+  },
+  {
+    "name": "~Counter",
+    "qualified_name": "Counter.~Counter",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 7,
+    "end_line": 7
+  },
+  {
+    "name": "get",
+    "qualified_name": "Counter.get",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 8,
+    "end_line": 8
+  },
+  {
+    "name": "operator==",
+    "qualified_name": "Counter.operator==",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 9,
+    "end_line": 9
+  },
+  {
+    "name": "raw",
+    "qualified_name": "Counter.raw",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 10,
+    "end_line": 10
+  },
+  {
+    "name": "reset",
+    "qualified_name": "Counter.reset",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 19,
+    "end_line": 19
+  },
+  {
+    "name": "bump",
+    "qualified_name": "Counter.bump",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 21,
+    "end_line": 25
+  },
+  {
+    "name": "self",
+    "qualified_name": "Counter.self",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 27,
+    "end_line": 27
+  },
+  {
+    "name": "ptr",
+    "qualified_name": "Counter.ptr",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 29,
+    "end_line": 29
+  },
+  {
+    "name": "Box",
+    "qualified_name": "Box.Box",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 31,
+    "end_line": 31
+  },
+  {
+    "name": "~Box",
+    "qualified_name": "Box.~Box",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 33,
+    "end_line": 33
+  },
+  {
+    "name": "operator\u003c",
+    "qualified_name": "Box.operator\u003c",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 35,
+    "end_line": 35
+  },
+  {
+    "name": "load",
+    "qualified_name": "Store.load",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 38,
+    "end_line": 38
+  },
+  {
+    "name": "depth",
+    "qualified_name": "Inner.depth",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 40,
+    "end_line": 40
+  },
+  {
+    "name": "value",
+    "qualified_name": "Holder.value",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 43,
+    "end_line": 43
+  },
+  {
+    "name": "start",
+    "qualified_name": "Service.start",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 46,
+    "end_line": 46
+  },
+  {
+    "name": "clamp",
+    "qualified_name": "util.clamp",
+    "kind": "method",
+    "language": "cpp",
+    "start_line": 50,
+    "end_line": 50
+  },
+  {
+    "name": "helper",
+    "qualified_name": "helper",
+    "kind": "function",
+    "language": "cpp",
+    "start_line": 52,
+    "end_line": 52
+  }
+]

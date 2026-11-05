@@ -4,8 +4,16 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ## [Unreleased]
 
+Upgrading: migration 014 re-indexes C and C++ files only (their hashes are blanked; other languages keep theirs, nothing is deleted).
+
 ### Added
 - **Index runs are serialised across processes.** `IndexRepo` takes an OS advisory lock on `<db-path>.lock` (`LockFileEx` on Windows, `flock` on Unix) after its in-process run slot and holds it until the run ends, so `index`, `extract` (which indexes first) and `serve` (`reindex_project`, `--watch`) in separate processes no longer interleave their multi-transaction runs on one database. A run that finds the lock held logs `waiting for another index run on <db>` once and polls every 150 ms until it gets the lock or its context ends (Ctrl-C, `reindex_project` timeout). Readers never take the lock. The lock file (mode 0600, empty) stays next to the database; the OS releases the lock when a process exits, so a crash cannot leave a stale lock. New package `internal/store/filelock`; `store.DB.Path()` returns the path `store.Open` was given (DBs with no path are not locked). `golang.org/x/sys` is now a direct dependency (it was already indirect).
+
+### Fixed
+- **C++ methods defined outside their class** get the class prefix from the qualified name's scope: `int Foo::bar() {}` is `Foo.bar` (was `bar`), the same name as a member defined in the class body. Naming rules (documented on `cppScopedName`): only the last scope segment is kept, so `ns::Foo::bar` is `Foo.bar` and `A::B::m` is `B.m`; template arguments are dropped (`Foo<T>::bar` → `Foo.bar`); constructors, destructors and operators keep their C++ names (`Foo.Foo`, `Foo.~Foo`, `Foo.operator==`). A scoped namespace function `ns::helper` becomes `ns.helper` with kind `method`: the grammar can't tell a namespace from a class, so it is treated as a qualifier, not checked against the repo's classes. Unqualified functions inside `namespace ns { ... }` keep their bare name, as before.
+- More C++ definitions are symbols: out-of-class destructors, operators, nested or namespace-qualified scopes and pointer/reference returns (`Foo::~Foo`, `Foo::operator==`, `ns::Foo::bar`, `int* Foo::p()`, `Foo& Foo::self()`), which no pattern matched before, and member functions defined in the class body (`int get() { ... }`, `~Foo() {}`, `bool operator==(...) {}`), of which only constructors were found.
+- C++ calls resolve through the class: `Foo::bar()` and `ns::Foo::bar()` call sites are stored as `Foo.bar` and resolve by that qualified name (they were stored as `Foo::bar`, which never matched a symbol), so `Other::bar()` no longer competes with `Foo::bar`. `this->bar()`, `obj.bar()` and `bar()` stay plain calls (as in Java, C#, Kotlin and Swift), and now prefer the caller's own class when a scope has several `bar`s, since out-of-class methods have a container. `std::sort()` looks for `std.sort` and links nothing unless the repo defines one.
+- Migration 014 blanks the content hash of C/C++ files (files with `c`/`cpp` symbols, or a `.c`, `.h`, `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx`, `.hh` path), so the next index stores the new names and edges. A memory on a renamed method (`bar` → `Foo.bar`) has no symbol of its old qualified name to relink to and stays orphaned (kept, not deleted).
 
 ## [1.4.0] - 2026-11-04
 

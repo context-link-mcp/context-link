@@ -53,6 +53,11 @@ func TestSnapshotSwiftSymbols(t *testing.T) {
 	runSnapshotTest(t, adapters.NewSwiftAdapter(), "swift", "Sample.swift")
 }
 
+func TestSnapshotCppSymbols(t *testing.T) {
+	t.Parallel()
+	runSnapshotTest(t, adapters.NewCppAdapter(), "cpp", "sample.cpp")
+}
+
 func runSnapshotTest(t *testing.T, adapter LanguageAdapter, langDir, fixture string) {
 	t.Helper()
 
