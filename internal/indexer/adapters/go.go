@@ -13,6 +13,9 @@ var goSymbolsQuery []byte
 //go:embed queries/go_deps.scm
 var goDepsQuery []byte
 
+//go:embed queries/go_routes.scm
+var goRoutesQuery []byte
+
 // GoAdapter implements the LanguageAdapter interface for Go source files (.go).
 // It uses the Tree-sitter Go grammar for parsing.
 type GoAdapter struct{}
@@ -45,4 +48,10 @@ func (a *GoAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting Go dependencies.
 func (a *GoAdapter) GetDependencyQuery() []byte {
 	return goDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Gin, Echo, chi and
+// net/http route registrations.
+func (a *GoAdapter) GetRouteQuery() []byte {
+	return goRoutesQuery
 }

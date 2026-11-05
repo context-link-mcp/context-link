@@ -165,6 +165,46 @@ func TestExtractRoutesExpress(t *testing.T) {
 	assert.Contains(t, got, routeKey{"DELETE", "/users/:id"})
 }
 
+// TestExtractRoutesCrossFileHandler checks that a handler imported from
+// another file links through the import (on master only same-file handlers
+// linked), and that a member handler on an unknown object stays unlinked
+// rather than matching a same-named function elsewhere.
+func TestExtractRoutesCrossFileHandler(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupTestDB(t)
+	registry := NewLanguageRegistry()
+	require.NoError(t, registry.Register(adapters.NewJavaScriptAdapter()))
+	idx := NewIndexer(registry, db, 1, nil)
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "server.js"), []byte(`import { listUsers } from './users';
+const app = express();
+app.get('/users', listUsers);
+app.delete('/users/:id', controller.remove);
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "users.js"), []byte(`export function listUsers(req, res) {}
+export function remove(req, res) {}
+`), 0o600))
+	_, err := idx.IndexRepo(ctx, "repo", root)
+	require.NoError(t, err)
+
+	routes, err := store.FindRoutes(ctx, db, "repo", store.RouteFilter{Kind: "definition"})
+	require.NoError(t, err)
+	got := routeSet(routes)
+	require.Len(t, routes, 2)
+
+	list := got[routeKey{"GET", "/users"}]
+	require.NotNil(t, list.HandlerSymbolID, "listUsers is imported from users.js")
+	syms, err := store.GetSymbolsByIDs(ctx, db, "repo", []int64{*list.HandlerSymbolID})
+	require.NoError(t, err)
+	assert.Equal(t, "users.js", syms[*list.HandlerSymbolID].FilePath)
+
+	remove := got[routeKey{"DELETE", "/users/:id"}]
+	assert.Equal(t, "remove", remove.HandlerName)
+	assert.Nil(t, remove.HandlerSymbolID, "controller is not bound to users.js")
+}
+
 func TestExtractRoutesReplacedOnReindex(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

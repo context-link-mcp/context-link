@@ -1,0 +1,400 @@
+[
+  {
+    "method": "GET",
+    "path": "/",
+    "normalized_path": "/",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 21,
+    "handler_name": "listArticles",
+    "handler": "chi/server.go:listArticles"
+  },
+  {
+    "method": "ALL",
+    "path": "/metrics",
+    "normalized_path": "/metrics",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 22,
+    "handler_name": "listArticles",
+    "handler": "chi/server.go:listArticles"
+  },
+  {
+    "method": "OPTIONS",
+    "path": "/articles",
+    "normalized_path": "/articles",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 23,
+    "handler_name": "listArticles",
+    "handler": "chi/server.go:listArticles"
+  },
+  {
+    "method": "POST",
+    "path": "/webhook",
+    "normalized_path": "/webhook",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 24,
+    "handler_name": "getArticle",
+    "handler": "chi/server.go:getArticle"
+  },
+  {
+    "method": "GET",
+    "path": "/api/articles",
+    "normalized_path": "/api/articles",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 27,
+    "handler_name": "listArticles",
+    "handler": "chi/server.go:listArticles"
+  },
+  {
+    "method": "GET",
+    "path": "/api/articles/{articleID:[0-9]+}/",
+    "normalized_path": "/api/articles/:param/",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 29,
+    "handler_name": "getArticle",
+    "handler": "chi/server.go:getArticle"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/articles/{articleID:[0-9]+}/",
+    "normalized_path": "/api/articles/:param/",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 30,
+    "handler_name": "getArticle",
+    "handler": "chi/server.go:getArticle"
+  },
+  {
+    "method": "POST",
+    "path": "/api/users",
+    "normalized_path": "/api/users",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 33,
+    "handler_name": "Create",
+    "handler": "handlers/users.go:Create"
+  },
+  {
+    "method": "GET",
+    "path": "/users/{id}",
+    "normalized_path": "/users/:param",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 38,
+    "handler_name": "Show",
+    "handler": "handlers/users.go:UserHandler.Show"
+  },
+  {
+    "method": "DELETE",
+    "path": "/users/{id}",
+    "normalized_path": "/users/:param",
+    "framework": "chi",
+    "file": "chi/server.go",
+    "line": 39,
+    "handler_name": "Archive",
+    "handler": "handlers/users.go:UserHandler.Archive"
+  },
+  {
+    "method": "GET",
+    "path": "/orders",
+    "normalized_path": "/orders",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 18,
+    "handler_name": "listOrders",
+    "handler": "echo/server.go:listOrders"
+  },
+  {
+    "method": "POST",
+    "path": "/orders",
+    "normalized_path": "/orders",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 19,
+    "handler_name": "listOrders",
+    "handler": "echo/server.go:listOrders"
+  },
+  {
+    "method": "ALL",
+    "path": "/any",
+    "normalized_path": "/any",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 20,
+    "handler_name": "getOrder",
+    "handler": "echo/server.go:getOrder"
+  },
+  {
+    "method": "PATCH",
+    "path": "/orders/:id",
+    "normalized_path": "/orders/:param",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 21,
+    "handler_name": "getOrder",
+    "handler": "echo/server.go:getOrder"
+  },
+  {
+    "method": "GET",
+    "path": "/files/*",
+    "normalized_path": "/files/*",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 22,
+    "handler_name": "getOrder",
+    "handler": "echo/server.go:getOrder"
+  },
+  {
+    "method": "HEAD",
+    "path": "/files/*",
+    "normalized_path": "/files/*",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 22,
+    "handler_name": "getOrder",
+    "handler": "echo/server.go:getOrder"
+  },
+  {
+    "method": "GET",
+    "path": "/admin/orders/:id",
+    "normalized_path": "/admin/orders/:param",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 25,
+    "handler_name": "getOrder",
+    "handler": "echo/server.go:getOrder"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/users/:id",
+    "normalized_path": "/admin/users/:param",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 26
+  },
+  {
+    "method": "PUT",
+    "path": "/orders/:id",
+    "normalized_path": "/orders/:param",
+    "framework": "echo",
+    "file": "echo/server.go",
+    "line": 32
+  },
+  {
+    "method": "GET",
+    "path": "/health",
+    "normalized_path": "/health",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 31,
+    "handler_name": "health",
+    "handler": "gin/server.go:health"
+  },
+  {
+    "method": "ALL",
+    "path": "/ping",
+    "normalized_path": "/ping",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 32
+  },
+  {
+    "method": "PATCH",
+    "path": "/books/:id",
+    "normalized_path": "/books/:param",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 33,
+    "handler_name": "getBook",
+    "handler": "gin/server.go:getBook"
+  },
+  {
+    "method": "DELETE",
+    "path": "/books/:id",
+    "normalized_path": "/books/:param",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 34,
+    "handler_name": "getBook",
+    "handler": "gin/server.go:getBook"
+  },
+  {
+    "method": "PUT",
+    "path": "/books/:id",
+    "normalized_path": "/books/:param",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 34,
+    "handler_name": "getBook",
+    "handler": "gin/server.go:getBook"
+  },
+  {
+    "method": "GET",
+    "path": "/static/*filepath",
+    "normalized_path": "/static/*",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 35
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/books",
+    "normalized_path": "/api/v1/books",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 40,
+    "handler_name": "listBooks",
+    "handler": "gin/server.go:listBooks"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/books",
+    "normalized_path": "/api/v1/books",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 41,
+    "handler_name": "listBooks",
+    "handler": "gin/server.go:listBooks"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/books/:id",
+    "normalized_path": "/api/v1/books/:param",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 42,
+    "handler_name": "getBook",
+    "handler": "gin/server.go:getBook"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/users",
+    "normalized_path": "/api/v1/users",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 43,
+    "handler_name": "List",
+    "handler": "handlers/users.go:List"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/cache",
+    "normalized_path": "/admin/cache",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 45,
+    "handler_name": "health",
+    "handler": "gin/server.go:health"
+  },
+  {
+    "method": "GET",
+    "path": "/extra",
+    "normalized_path": "/extra",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 60,
+    "handler_name": "health",
+    "handler": "gin/server.go:health"
+  },
+  {
+    "method": "POST",
+    "path": "/login",
+    "normalized_path": "/login",
+    "framework": "gin",
+    "file": "gin/server.go",
+    "line": 64,
+    "handler_name": "health",
+    "handler": "gin/server.go:health"
+  },
+  {
+    "method": "ALL",
+    "path": "/",
+    "normalized_path": "/",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 20,
+    "handler_name": "index",
+    "handler": "nethttp/server.go:index"
+  },
+  {
+    "method": "ALL",
+    "path": "/assets/",
+    "normalized_path": "/assets/",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 21
+  },
+  {
+    "method": "GET",
+    "path": "/items/{id}",
+    "normalized_path": "/items/:param",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 24,
+    "handler_name": "getItem",
+    "handler": "nethttp/server.go:getItem"
+  },
+  {
+    "method": "POST",
+    "path": "/items",
+    "normalized_path": "/items",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 25
+  },
+  {
+    "method": "ALL",
+    "path": "/files/{path...}",
+    "normalized_path": "/files/*",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 26,
+    "handler_name": "index",
+    "handler": "nethttp/server.go:index"
+  },
+  {
+    "method": "GET",
+    "path": "/{$}",
+    "normalized_path": "/",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 27,
+    "handler_name": "index",
+    "handler": "nethttp/server.go:index"
+  },
+  {
+    "method": "ALL",
+    "path": "/about",
+    "normalized_path": "/about",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 28,
+    "handler_name": "List",
+    "handler": "handlers/users.go:List"
+  },
+  {
+    "method": "ALL",
+    "path": "/debug",
+    "normalized_path": "/debug",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 29,
+    "handler_name": "index",
+    "handler": "nethttp/server.go:index"
+  },
+  {
+    "method": "DELETE",
+    "path": "/items/{id}",
+    "normalized_path": "/items/:param",
+    "framework": "net/http",
+    "file": "nethttp/server.go",
+    "line": 32,
+    "handler_name": "getItem",
+    "handler": "nethttp/server.go:getItem"
+  }
+]

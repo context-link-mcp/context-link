@@ -54,7 +54,8 @@ func TestMigration014_ReindexesOnlyCAndCppFiles(t *testing.T) {
 	_, err := db.ExecContext(ctx, `INSERT INTO memories (symbol_id, repo_name, note) VALUES (?, 'r', 'keep me')`, symIDs[0])
 	require.NoError(t, err)
 
-	require.NoError(t, Migrate(db))
+	// Only 014: later migrations (015 re-indexes Go files) blank other hashes.
+	applyMigrationFile(t, db, "014_reindex_cpp_qualified_names.sql")
 
 	for _, f := range files {
 		var hash string

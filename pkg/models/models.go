@@ -22,17 +22,17 @@ type Symbol struct {
 
 // Memory represents a persistent note attached to a symbol.
 type Memory struct {
-	ID               int64
-	SymbolID         *int64 // nullable — SET NULL on symbol delete
-	RepoName         string // owning repo; empty for legacy rows that could not be attributed
-	Note             string
-	Author           string // "agent" or "developer"
-	IsStale          bool
-	StaleReason      string
-	LastKnownSymbol  string
-	LastKnownFile    string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID              int64
+	SymbolID        *int64 // nullable — SET NULL on symbol delete
+	RepoName        string // owning repo; empty for legacy rows that could not be attributed
+	Note            string
+	Author          string // "agent" or "developer"
+	IsStale         bool
+	StaleReason     string
+	LastKnownSymbol string
+	LastKnownFile   string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // File represents an indexed source file tracked for incremental re-indexing.
@@ -61,10 +61,17 @@ type Route struct {
 	PathPattern     string `json:"path_pattern"`
 	NormalizedPath  string `json:"normalized_path"`
 	HandlerSymbolID *int64 `json:"handler_symbol_id,omitempty"`
-	FilePath        string `json:"file_path"`
-	StartLine       int    `json:"start_line"`
-	Framework       string `json:"framework"`
-	Kind            string `json:"kind"` // "definition" or "call_site"
+	// HandlerName is the handler as written at the registration (the field
+	// of a selector such as handlers.List), empty for an inline handler. It
+	// is kept when the handler can't be linked to a symbol.
+	HandlerName string `json:"handler_name,omitempty"`
+	// HandlerQualifier is the receiver or package of a selector handler
+	// ("handlers" in handlers.List), used to relink it across files.
+	HandlerQualifier string `json:"-"`
+	FilePath         string `json:"file_path"`
+	StartLine        int    `json:"start_line"`
+	Framework        string `json:"framework"`
+	Kind             string `json:"kind"` // "definition" or "call_site"
 }
 
 // Section represents a parsed section of a Markdown document.
