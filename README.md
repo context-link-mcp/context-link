@@ -847,7 +847,9 @@ BFS through callers to show everything affected by changing a symbol. Groups res
 | `kind` | string | no | _(all)_ | Filter: `function`, `class`, `interface`, `type`, `variable`, `method` |
 | `limit` | number | no | `50` | Max results: positive; values above `200` are capped to `200` |
 
-Results are ordered by file and line. The regex is applied before the limit; `truncated` is `true` when more symbols match than `limit` (`truncated_reason: "limit"`) or when the scan stopped after 50,000 candidate symbols (`"scan_cap"`).
+Results are ordered by file and line. The regex is applied before the limit; `truncated` is `true` when more symbols match than `limit` (`truncated_reason: "limit"`) or when the scan stopped at the scan cap (`"scan_cap"`).
+
+**Scan cap:** candidates (the symbols that pass `file_path_prefix`, `kind` and the pattern's literal prefilter) are read in pages of 500 and matched in Go. The scan stops after 50,000 candidates (`tools.MaxPatternScan`, checked after each page) so a broad pattern over a large repo stays within the tool timeout. The cap is fixed, not a parameter; when you hit it, narrow the pattern or add `file_path_prefix`/`kind`.
 
 ```json
 {
