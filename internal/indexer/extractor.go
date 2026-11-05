@@ -110,7 +110,7 @@ func typeName(node *sitter.Node, source []byte) string {
 				node = t
 				continue
 			}
-		case "scoped_type_identifier":
+		case "scoped_type_identifier", "template_type":
 			if n := node.ChildByFieldName("name"); n != nil {
 				node = n
 				continue
@@ -130,6 +130,34 @@ func typeName(node *sitter.Node, source []byte) string {
 		content = content[:i]
 	}
 	return strings.TrimSpace(content)
+}
+
+// cppScopedName splits a C++ qualified_identifier (Foo::bar, ns::Foo::bar,
+// Foo<T>::bar, Foo::~Foo, Foo::operator==) into the last scope segment and the
+// member name: ("Foo", "bar"), ("Foo", "~Foo"), ("Foo", "operator=="). Only
+// the last segment is kept, so an out-of-class definition gets the same
+// qualified name (Foo.bar) as a member defined in the class body, and the
+// same container naming as the other languages; namespaces are dropped.
+// Template arguments are dropped (typeName). The grammar can't tell a class
+// scope from a namespace, so ns::helper gives ("ns", "helper") as well. The
+// scope is "" for a global-scope name (::foo) or a node of another type.
+func cppScopedName(node *sitter.Node, source []byte) (scope, name string) {
+	for node != nil && node.Type() == "qualified_identifier" {
+		if s := node.ChildByFieldName("scope"); s != nil {
+			scope = typeName(s, source)
+		}
+		node = node.ChildByFieldName("name")
+	}
+	if node == nil {
+		return "", ""
+	}
+	if node.Type() == "template_function" || node.Type() == "template_method" {
+		if n := node.ChildByFieldName("name"); n != nil {
+			node = n // Foo::bar<int> → bar
+		}
+	}
+	name, _ = safeNodeContent(node, source)
+	return scope, name
 }
 
 // resolveGoReceiver extracts the receiver type from a Go method_declaration node.
@@ -238,13 +266,16 @@ func (e *Extractor) processSymbolMatch(
 	var name, body string
 	var kind string
 	var outerNode *sitter.Node
+	scope := "" // explicit qualifier of the name (C++ Foo::bar), see cppScopedName
 
 	for _, capture := range match.Captures {
 		captureName := query.CaptureNameForId(capture.Index)
 
 		switch captureName {
 		case "symbol.name":
-			if c, ok := safeNodeContent(capture.Node, source); ok {
+			if capture.Node.Type() == "qualified_identifier" {
+				scope, name = cppScopedName(capture.Node, source)
+			} else if c, ok := safeNodeContent(capture.Node, source); ok {
 				name = c
 			}
 		case "symbol.body":
@@ -271,6 +302,11 @@ func (e *Extractor) processSymbolMatch(
 		if receiver, ok := resolveGoReceiver(outerNode, source); ok {
 			qualifiedName = receiver + "." + name
 		}
+	} else if scope != "" {
+		// C++ out-of-class definition: int Foo::bar() {} is Foo.bar. The kind
+		// stays what the query says (method), also for a namespace function
+		// (ns::helper), which the grammar can't tell from a class member.
+		qualifiedName = scope + "." + name
 	} else if kind == "method" || kind == "function" {
 		// All languages: walk up AST to find enclosing class/struct/impl.
 		if className, ok := resolveParentClass(outerNode, source); ok {
@@ -428,6 +464,20 @@ func (e *Extractor) processDependencyMatch(
 			}
 
 		case "dependency.call":
+			if capture.Node.Type() == "qualified_identifier" {
+				// C++ Foo::bar() and ns::Foo::bar() call Foo.bar, the
+				// qualified name the definition gets (cppScopedName), so they
+				// resolve by it; std::sort() looks for std.sort and links
+				// nothing unless the repo defines one.
+				scope, name := cppScopedName(capture.Node, source)
+				if name == "" {
+					continue
+				}
+				if scope != "" {
+					name = scope + "." + name
+				}
+				content = name
+			}
 			deps = append(deps, ExtractedDep{
 				Kind:       "call",
 				Symbol:     content,

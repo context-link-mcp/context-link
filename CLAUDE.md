@@ -96,6 +96,7 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 - One parser factory per grammar; a fresh parser per parse (pooled parsers get poisoned by stale cancellation, see parser.go)
 - `.scm` query files embedded via `//go:embed`, relative to adapter package
 - Symbol deduplication by (qualified_name, start_line) in extractor; the store's unique key is (repo_name, qualified_name, file_path, start_line), so overloads and several Go `init()` are all kept. Lookups by name must stay deterministic (first by file, then start line)
+- Methods are `Container.name`: the enclosing class (`resolveParentClass`), the Go receiver, or for C++ out-of-class definitions the last scope segment of the qualified name (`cppScopedName`: `ns::Foo<T>::bar` → `Foo.bar`; `ns::helper` → `ns.helper`, kind method). C++ `Foo::bar()` call sites are stored as `Foo.bar` so they resolve by qualified name
 - Symbol queries match top-level and class/type-level declarations only: a function-local variable must never be a symbol (it would take the edges of the calls next to it)
 
 ### Style
