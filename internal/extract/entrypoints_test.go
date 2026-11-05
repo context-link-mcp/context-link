@@ -3,6 +3,7 @@ package extract
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,6 +70,42 @@ func TestRunEntryPointsCapIsReported(t *testing.T) {
 	assert.Equal(t, 1, res.EntryPoints[0].Line)
 	assert.NotContains(t, entryPaths(res), "/api/login", "backend/routes.py sorts after api/a.py and is cut")
 	assert.True(t, hasWarning(res, "11 more entry points were omitted"), res.Warnings)
+}
+
+// TestBuildEntryPointsHandlerLookupError: a failing handler lookup is returned
+// as an error, not entry points without handler names. Routes without a
+// handler need no lookup, so they still build on the same (closed) DB.
+func TestBuildEntryPointsHandlerLookupError(t *testing.T) {
+	t.Parallel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "closed.db"))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	handler := int64(1)
+	tests := []struct {
+		name    string
+		routes  []models.Route
+		wantErr bool
+	}{
+		{"handler to look up", []models.Route{{Method: "GET", PathPattern: "/a", FilePath: "api/a.py", StartLine: 1, HandlerSymbolID: &handler}}, true},
+		{"no handlers", []models.Route{{Method: "GET", PathPattern: "/a", FilePath: "api/a.py", StartLine: 1}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			eps, omitted, err := buildEntryPoints(context.Background(), db, Options{RepoName: "repo"}, tc.routes)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "extract: failed to load route handlers")
+				assert.Nil(t, eps)
+				return
+			}
+			require.NoError(t, err)
+			assert.Zero(t, omitted)
+			require.Len(t, eps, 1)
+			assert.Empty(t, eps[0].Handler)
+		})
+	}
 }
 
 func entryPaths(res *Result) []string {
