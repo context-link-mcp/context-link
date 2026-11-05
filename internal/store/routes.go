@@ -37,8 +37,9 @@ func BatchInsertRoutes(ctx context.Context, db *DB, routes []models.Route) error
 
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT OR REPLACE INTO routes
-		 (repo_name, method, path_pattern, normalized_path, handler_symbol_id, file_path, start_line, framework, kind)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (repo_name, method, path_pattern, normalized_path, handler_symbol_id,
+		  handler_name, handler_qualifier, file_path, start_line, framework, kind)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to prepare route insert: %w", err)
@@ -48,7 +49,8 @@ func BatchInsertRoutes(ctx context.Context, db *DB, routes []models.Route) error
 	for _, r := range routes {
 		_, err := stmt.ExecContext(ctx,
 			r.RepoName, r.Method, r.PathPattern, r.NormalizedPath,
-			r.HandlerSymbolID, r.FilePath, r.StartLine, r.Framework, r.Kind,
+			r.HandlerSymbolID, r.HandlerName, r.HandlerQualifier,
+			r.FilePath, r.StartLine, r.Framework, r.Kind,
 		)
 		if err != nil {
 			return fmt.Errorf("store: failed to insert route %s %s: %w", r.Method, r.PathPattern, err)
@@ -77,6 +79,73 @@ func DeleteRoutesByFile(ctx context.Context, db *DB, repoName, filePath, kind st
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to delete routes for %s: %w", filePath, err)
+	}
+	return nil
+}
+
+// UnlinkedRoute is a route definition with a named handler that is not linked
+// to a symbol: not found yet, or unlinked by its handler file's re-index.
+type UnlinkedRoute struct {
+	ID               int64
+	FilePath         string
+	StartLine        int
+	HandlerName      string
+	HandlerQualifier string
+}
+
+// GetUnlinkedRoutes returns the repo's route definitions that name a handler
+// but have no handler symbol, ordered by ID.
+func GetUnlinkedRoutes(ctx context.Context, db *DB, repoName string) ([]UnlinkedRoute, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, file_path, start_line, handler_name, handler_qualifier
+		 FROM routes
+		 WHERE repo_name = ? AND kind = 'definition'
+		   AND handler_symbol_id IS NULL AND handler_name != ''
+		 ORDER BY id`,
+		repoName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to query unlinked routes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UnlinkedRoute
+	for rows.Next() {
+		var r UnlinkedRoute
+		if err := rows.Scan(&r.ID, &r.FilePath, &r.StartLine, &r.HandlerName, &r.HandlerQualifier); err != nil {
+			return nil, fmt.Errorf("store: failed to scan unlinked route: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetRouteHandlers links routes (route ID → handler symbol ID) in one
+// transaction.
+func SetRouteHandlers(ctx context.Context, db *DB, repoName string, handlers map[int64]int64) error {
+	if len(handlers) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: failed to begin route handler update: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.PrepareContext(ctx,
+		`UPDATE routes SET handler_symbol_id = ? WHERE repo_name = ? AND id = ?`)
+	if err != nil {
+		return fmt.Errorf("store: failed to prepare route handler update: %w", err)
+	}
+	defer stmt.Close()
+
+	for routeID, symbolID := range handlers {
+		if _, err := stmt.ExecContext(ctx, symbolID, repoName, routeID); err != nil {
+			return fmt.Errorf("store: failed to link route %d: %w", routeID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: failed to commit route handlers: %w", err)
 	}
 	return nil
 }
@@ -122,7 +191,8 @@ func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter
 
 	query := fmt.Sprintf(
 		`SELECT id, repo_name, method, path_pattern, normalized_path,
-		        handler_symbol_id, file_path, start_line, framework, kind
+		        handler_symbol_id, handler_name, handler_qualifier,
+		        file_path, start_line, framework, kind
 		 FROM routes
 		 WHERE %s
 		 ORDER BY method, normalized_path
@@ -141,7 +211,8 @@ func FindRoutes(ctx context.Context, db *DB, repoName string, filter RouteFilter
 		var r models.Route
 		if err := rows.Scan(
 			&r.ID, &r.RepoName, &r.Method, &r.PathPattern, &r.NormalizedPath,
-			&r.HandlerSymbolID, &r.FilePath, &r.StartLine, &r.Framework, &r.Kind,
+			&r.HandlerSymbolID, &r.HandlerName, &r.HandlerQualifier,
+			&r.FilePath, &r.StartLine, &r.Framework, &r.Kind,
 		); err != nil {
 			return nil, fmt.Errorf("store: failed to scan route row: %w", err)
 		}
@@ -308,8 +379,14 @@ var (
 	// flaskParam matches Flask/Werkzeug <name> and <converter:name> (also
 	// <converter(args):name>).
 	flaskParam = regexp.MustCompile(`<(?:([a-zA-Z_]\w*)(?:\([^)]*\))?:)?[a-zA-Z_]\w*>`)
-	// braceParam matches FastAPI/Starlette {name} and {name:converter}.
-	braceParam = regexp.MustCompile(`\{[a-zA-Z_]\w*(?::([a-zA-Z_]\w*))?\}`)
+	// braceParam matches FastAPI/Starlette {name} and {name:converter}, chi
+	// and Spring {name:regex} (one level of nested braces, as in
+	// {id:[0-9]{3}}) and Go 1.22 net/http {name...}. Group 1 is "..." for a
+	// Go wildcard, group 2 the converter or regex.
+	braceParam = regexp.MustCompile(`\{[a-zA-Z_]\w*(\.\.\.)?(?::((?:[^{}]|\{[^{}]*\})*))?\}`)
+	// goExactMatch is Go 1.22 net/http's {$}, which anchors the end of a
+	// pattern ("/{$}" matches only "/") and is not a parameter.
+	goExactMatch = regexp.MustCompile(`\{\$\}`)
 	// colonParam matches Express/Gin :name with an optional Express regex
 	// constraint (:id(\d+)) and optional/repeat modifier (:id?, :id*, :id+).
 	colonParam = regexp.MustCompile(`:[a-zA-Z_]\w*(?:\([^)]*\))?([?*+])?`)
@@ -320,8 +397,10 @@ var (
 // NormalizePath converts framework-specific path parameters to a canonical
 // form: a parameter matching one segment becomes ":param", one that can span
 // segments becomes "*". Express/Gin ":id" (with optional "(regex)"), FastAPI
-// "{id}" and Flask "<id>" / "<int:id>" give ":param"; Flask "<path:p>",
-// FastAPI "{p:path}", Express "*" / "*splat" / ":p*" / ":p+" give "*".
+// "{id}", chi "{id}" / "{id:[0-9]+}", Echo/Gin ":id" and Flask "<id>" /
+// "<int:id>" give ":param"; Flask "<path:p>", FastAPI "{p:path}", Go 1.22
+// "{p...}", Express/Echo/chi "*", Express "*splat" / ":p*" / ":p+" and Gin
+// "*p" give "*". Go's "{$}" end anchor is dropped.
 func NormalizePath(path string) string {
 	path = flaskParam.ReplaceAllStringFunc(path, func(m string) string {
 		if sub := flaskParam.FindStringSubmatch(m); sub[1] == "path" {
@@ -329,8 +408,9 @@ func NormalizePath(path string) string {
 		}
 		return ":param"
 	})
+	path = goExactMatch.ReplaceAllString(path, "")
 	path = braceParam.ReplaceAllStringFunc(path, func(m string) string {
-		if sub := braceParam.FindStringSubmatch(m); sub[1] == "path" {
+		if sub := braceParam.FindStringSubmatch(m); sub[1] == "..." || sub[2] == "path" {
 			return catchAll
 		}
 		return ":param"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -28,9 +29,13 @@ type ExtractedRoute struct {
 	Method      string // upper-case HTTP method, or "ALL"
 	PathPattern string // path as written, with any router prefix applied
 	Handler     string // handler function name, empty for inline/anonymous handlers
-	Framework   string // "fastapi", "flask", "express", ...
-	FilePath    string
-	StartLine   int // 1-based
+	// HandlerQualifier is the receiver or package of a selector handler
+	// ("handlers" in Go handlers.List), empty for a plain name. A qualified
+	// handler is resolved like a method or package call (see resolve.go).
+	HandlerQualifier string
+	Framework        string // "fastapi", "flask", "express", "gin", ...
+	FilePath         string
+	StartLine        int // 1-based
 }
 
 // pythonRouteVerbs maps decorator attribute names to HTTP methods. "route" and
@@ -87,8 +92,9 @@ func joinRoutePath(prefix, path string) string {
 }
 
 // storeRoutes persists the routes extracted in this run, linking each to its
-// handler symbol (same file, matching name) when one exists. Returns the
-// number of routes stored. Failures are logged, not fatal.
+// handler symbol (same file, matching name) when one exists, then links the
+// repo's remaining named handlers across files (see linkRouteHandlers).
+// Returns the number of routes stored. Failures are logged, not fatal.
 func (idx *Indexer) storeRoutes(
 	ctx context.Context,
 	repoName string,
@@ -107,8 +113,13 @@ func (idx *Indexer) storeRoutes(
 				StartLine:      er.StartLine,
 				Framework:      er.Framework,
 				Kind:           "definition",
+
+				HandlerName:      er.Handler,
+				HandlerQualifier: er.HandlerQualifier,
 			}
-			if er.Handler != "" {
+			// A qualified handler (handlers.List) is not looked up by bare
+			// name: a same-named function in this file is another symbol.
+			if er.Handler != "" && er.HandlerQualifier == "" {
 				for _, sym := range symbolsByFile[er.FilePath] {
 					if sym.Name == er.Handler && (sym.Kind == "function" || sym.Kind == "method") {
 						id := sym.ID
@@ -124,7 +135,94 @@ func (idx *Indexer) storeRoutes(
 		slog.Warn("indexer: failed to store routes", "error", err)
 		return 0
 	}
+	idx.linkRouteHandlers(ctx, repoName, results, symbolsByFile)
 	return len(routes)
+}
+
+// linkRouteHandlers links every route of the repo that names a handler but
+// has none: the handler is in another file (Go handlers.List, a function of
+// the same package, a JS name imported from another module), or its file was
+// re-indexed since, which set the link to NULL. The handler is resolved like
+// a call at the route's line (resolve.go): same language, the route's file,
+// then its directory and the files it imports; a qualifier bound by an import
+// only inside the imported files; never by a bare name across the repo for
+// Go. Only functions and methods are candidates. Failures are logged, not
+// fatal.
+func (idx *Indexer) linkRouteHandlers(
+	ctx context.Context,
+	repoName string,
+	results []fileResult,
+	symbolsByFile map[string][]models.Symbol,
+) {
+	unlinked, err := store.GetUnlinkedRoutes(ctx, idx.db, repoName)
+	if err != nil {
+		slog.Warn("indexer: failed to load unlinked routes", "error", err)
+		return
+	}
+	if len(unlinked) == 0 {
+		return
+	}
+
+	// The imports of each route file: from this run's deps, else as stored.
+	sites := make(map[string][]store.CallSite)
+	for _, r := range results {
+		sites[r.file.RelPath] = callSites(r.deps)
+	}
+	var load []string
+	for _, u := range unlinked {
+		if _, ok := sites[u.FilePath]; !ok {
+			sites[u.FilePath] = nil
+			load = append(load, u.FilePath)
+		}
+	}
+	loaded, err := store.GetCallSitesByFiles(ctx, idx.db, repoName, load)
+	if err != nil {
+		slog.Warn("indexer: failed to load call sites for route handlers", "error", err)
+		return
+	}
+	for _, f := range load {
+		sites[f] = loaded[f]
+	}
+
+	handlers := make(map[string][]models.Symbol, len(symbolsByFile))
+	for file, syms := range symbolsByFile {
+		for _, s := range syms {
+			if s.Kind == "function" || s.Kind == "method" {
+				handlers[file] = append(handlers[file], s)
+			}
+		}
+	}
+	res := newResolver(handlers)
+	res.goModule = goModulePath(idx.repoRoot)
+
+	scopes := make(map[string]importScope)
+	links := make(map[int64]int64)
+	for _, u := range unlinked {
+		// The route's file may have no symbols (module-level JS), so its
+		// language comes from its adapter.
+		adapter, ok := idx.registry.GetAdapter(filepath.Ext(u.FilePath))
+		if !ok {
+			continue
+		}
+		family := languageFamily(adapter.Name())
+		syms := symbolsByFile[u.FilePath]
+		scope, ok := scopes[u.FilePath]
+		if !ok {
+			scope = res.imports(family, u.FilePath, sites[u.FilePath])
+			scopes[u.FilePath] = scope
+		}
+		container := ""
+		if s, ok := enclosingSymbol(syms, u.StartLine); ok {
+			container = symbolContainer(s)
+		}
+		site := store.CallSite{Line: u.StartLine, Kind: "call", Name: u.HandlerName, Qualifier: u.HandlerQualifier}
+		if id, ok := res.resolve(family, u.FilePath, container, site, scope); ok {
+			links[u.ID] = id
+		}
+	}
+	if err := store.SetRouteHandlers(ctx, idx.db, repoName, links); err != nil {
+		slog.Warn("indexer: failed to link route handlers", "error", err)
+	}
 }
 
 // ExtractRoutes runs the adapter's route query and returns the HTTP route
@@ -144,6 +242,11 @@ func (e *Extractor) ExtractRoutes(
 	queryBytes := provider.GetRouteQuery()
 	if len(queryBytes) == 0 {
 		return nil, nil
+	}
+	if adapter.Name() == "go" {
+		// Go needs the receiver's type and the call's AST ancestry (chi
+		// r.Route nesting), so it has its own pass over the matches.
+		return goRoutes(ctx, tree, source, adapter, queryBytes, filePath)
 	}
 
 	query, err := sitter.NewQuery(queryBytes, adapter.GetLanguage())
@@ -337,13 +440,16 @@ func jsRoutes(
 	}
 	last := args.NamedChild(int(args.NamedChildCount()) - 1)
 
-	handler := ""
+	handler, qualifier := "", ""
 	switch last.Type() {
 	case "identifier":
 		handler, _ = safeNodeContent(last, source)
 	case "member_expression":
 		if prop := last.ChildByFieldName("property"); prop != nil {
 			handler, _ = safeNodeContent(prop, source)
+		}
+		if obj := last.ChildByFieldName("object"); obj != nil {
+			qualifier, _ = safeNodeContent(obj, source)
 		}
 	case "arrow_function", "function_expression", "function", "call_expression":
 		// Inline or wrapped handler: valid route, no resolvable name.
@@ -352,11 +458,12 @@ func jsRoutes(
 	}
 
 	return []ExtractedRoute{{
-		Method:      method,
-		PathPattern: path,
-		Handler:     handler,
-		Framework:   "express",
-		FilePath:    filePath,
-		StartLine:   int(caps["route.call"].StartPoint().Row) + 1,
+		Method:           method,
+		PathPattern:      path,
+		Handler:          handler,
+		HandlerQualifier: qualifier,
+		Framework:        "express",
+		FilePath:         filePath,
+		StartLine:        int(caps["route.call"].StartPoint().Row) + 1,
 	}}
 }

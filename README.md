@@ -881,7 +881,20 @@ Results are ordered by file and line. The regex is applied before the limit; `tr
 
 Discovers HTTP route definitions and call sites in the codebase and matches them with confidence scoring.
 
-**What the indexer detects today:** route *definitions* for FastAPI and Flask (`@router.get("/x")`, `@app.route("/x", methods=[...])`, `APIRouter(prefix=...)` / `Blueprint(url_prefix=...)` prefixes in the same file) and Express-style registrations in JavaScript/TypeScript (`app.get('/x', handler)`). Handlers are linked to their symbols. Not detected yet: Gin, Django, Spring, router prefixes applied in another file (`include_router(prefix=...)`), and client call sites — so `matches` is usually empty.
+**What the indexer detects today:** route *definitions* for
+
+| Language | Framework | Forms |
+|----------|-----------|-------|
+| Python | FastAPI, Flask | `@router.get("/x")`, `@app.route("/x", methods=[...])`; `APIRouter(prefix=...)` / `Blueprint(url_prefix=...)` prefixes in the same file |
+| JavaScript/TypeScript | Express-style | `app.get('/x', handler)`, `router.delete('/x', mw, ctrl.remove)` |
+| Go | Gin | `r.GET/POST/...("/x", h)`, `Any`, `Handle("GET", ...)`, `Match([]string{...}, ...)`; `api := r.Group("/api")`, chained (`v1 := api.Group("/v1")`) or inline (`r.Group("/a").GET(...)`) |
+| Go | Echo | `e.GET/POST/...("/x", h, mw...)`, `Any`, `Add("GET", ...)`, `Match`; `g := e.Group("/admin")` |
+| Go | chi | `r.Get/Post/...("/x", h)`, `Handle`/`HandleFunc` (any method, or `"GET /x"`), `Method("GET", ...)`; nested `r.Route("/api", func(r chi.Router) {...})`, `r.Group(fn)`, `r.With(mw)` |
+| Go | net/http | `http.HandleFunc("/x", h)`, `mux.HandleFunc("GET /items/{id}", h)` (Go 1.22 method and `{name...}` / `{$}` patterns, host patterns), `http.DefaultServeMux` |
+
+Go registrations count only on a router of an imported framework: a variable assigned from `gin.New/Default`, `echo.New`, `chi.NewRouter`, `http.NewServeMux` or a `.Group(...)` of one, or a parameter or struct field of a router type (`*gin.Engine`, `*gin.RouterGroup`, `*echo.Echo`, `*echo.Group`, `chi.Router`, `*http.ServeMux`). The handler argument must be a function name, selector, func literal or wrapper call. So `http.Get(url)`, `client.Get("/x")`, `c.Get("key")` on a Gin/Echo context or a cache are not routes.
+
+Handlers are linked to their symbols: in the same file by name, otherwise like a call from the registration (same language; the route's file, its directory or package, then the files it imports; `handlers.List` only inside the imported `handlers` package; `h.Show` on a value of an imported type to that package's method). Func literals and wrapped handlers (`middleware(h)`, `gin.WrapH(...)`) are inline and have no handler. Not detected yet: Django, Spring, gorilla/mux, chi `Mount`, router prefixes applied in another file (`include_router(prefix=...)`, a Gin group passed to another file's function), and client call sites — so `matches` is usually empty.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
