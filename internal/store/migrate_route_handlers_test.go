@@ -10,6 +10,15 @@ import (
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
 
+// applyMigrationFile applies one migration to db, so a migration's test isn't
+// affected by the migrations after it.
+func applyMigrationFile(t *testing.T, db *DB, name string) {
+	t.Helper()
+	content, err := migrationsFS.ReadFile("migrations/" + name)
+	require.NoError(t, err)
+	require.NoError(t, applyMigration(db.DB, name, string(content)))
+}
+
 // TestMigration015_RouteHandlerNames checks that 015 keeps existing routes
 // (with empty handler names) and blanks only Go files' hashes, so the next
 // index extracts Go routes without re-indexing the rest.
@@ -28,7 +37,7 @@ func TestMigration015_RouteHandlerNames(t *testing.T) {
 		 VALUES ('r', 'GET', '/x', '/x', 'app.py', 3, 'flask')`)
 	require.NoError(t, err)
 
-	require.NoError(t, Migrate(db))
+	applyMigrationFile(t, db, "015_route_handler_names.sql")
 
 	hashes, err := GetFileHashIndex(ctx, db, "r")
 	require.NoError(t, err)
