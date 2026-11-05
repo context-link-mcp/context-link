@@ -91,13 +91,14 @@ type UnlinkedRoute struct {
 	StartLine        int
 	HandlerName      string
 	HandlerQualifier string
+	Framework        string
 }
 
 // GetUnlinkedRoutes returns the repo's route definitions that name a handler
 // but have no handler symbol, ordered by ID.
 func GetUnlinkedRoutes(ctx context.Context, db *DB, repoName string) ([]UnlinkedRoute, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, file_path, start_line, handler_name, handler_qualifier
+		`SELECT id, file_path, start_line, handler_name, handler_qualifier, framework
 		 FROM routes
 		 WHERE repo_name = ? AND kind = 'definition'
 		   AND handler_symbol_id IS NULL AND handler_name != ''
@@ -112,7 +113,7 @@ func GetUnlinkedRoutes(ctx context.Context, db *DB, repoName string) ([]Unlinked
 	var out []UnlinkedRoute
 	for rows.Next() {
 		var r UnlinkedRoute
-		if err := rows.Scan(&r.ID, &r.FilePath, &r.StartLine, &r.HandlerName, &r.HandlerQualifier); err != nil {
+		if err := rows.Scan(&r.ID, &r.FilePath, &r.StartLine, &r.HandlerName, &r.HandlerQualifier, &r.Framework); err != nil {
 			return nil, fmt.Errorf("store: failed to scan unlinked route: %w", err)
 		}
 		out = append(out, r)

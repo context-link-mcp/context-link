@@ -87,6 +87,7 @@ func TestUnlinkedRoutesAndSetRouteHandlers(t *testing.T) {
 	require.Len(t, unlinked, 1)
 	assert.Equal(t, "List", unlinked[0].HandlerName)
 	assert.Equal(t, "handlers", unlinked[0].HandlerQualifier)
+	assert.Equal(t, "gin", unlinked[0].Framework)
 
 	require.NoError(t, SetRouteHandlers(ctx, db, "r", map[int64]int64{unlinked[0].ID: symID}))
 	unlinked, err = GetUnlinkedRoutes(ctx, db, "r")

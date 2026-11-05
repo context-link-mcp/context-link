@@ -28,7 +28,10 @@ type RouteQueryProvider interface {
 type ExtractedRoute struct {
 	Method      string // upper-case HTTP method, or "ALL"
 	PathPattern string // path as written, with any router prefix applied
-	Handler     string // handler function name, empty for inline/anonymous handlers
+	// NormalizedPath, when set, is stored instead of
+	// store.NormalizePath(PathPattern) (Django regex paths).
+	NormalizedPath string
+	Handler        string // handler function name, empty for inline/anonymous handlers
 	// HandlerQualifier is the receiver or package of a selector handler
 	// ("handlers" in Go handlers.List), empty for a plain name. A qualified
 	// handler is resolved like a method or package call (see resolve.go).
@@ -108,7 +111,7 @@ func (idx *Indexer) storeRoutes(
 				RepoName:       repoName,
 				Method:         er.Method,
 				PathPattern:    er.PathPattern,
-				NormalizedPath: store.NormalizePath(er.PathPattern),
+				NormalizedPath: er.NormalizedPath,
 				FilePath:       er.FilePath,
 				StartLine:      er.StartLine,
 				Framework:      er.Framework,
@@ -117,11 +120,14 @@ func (idx *Indexer) storeRoutes(
 				HandlerName:      er.Handler,
 				HandlerQualifier: er.HandlerQualifier,
 			}
+			if route.NormalizedPath == "" {
+				route.NormalizedPath = store.NormalizePath(er.PathPattern)
+			}
 			// A qualified handler (handlers.List) is not looked up by bare
 			// name: a same-named function in this file is another symbol.
 			if er.Handler != "" && er.HandlerQualifier == "" {
 				for _, sym := range symbolsByFile[er.FilePath] {
-					if sym.Name == er.Handler && (sym.Kind == "function" || sym.Kind == "method") {
+					if sym.Name == er.Handler && routeHandlerKind(er.Framework, sym.Kind) {
 						id := sym.ID
 						route.HandlerSymbolID = &id
 						break
@@ -146,8 +152,8 @@ func (idx *Indexer) storeRoutes(
 // a call at the route's line (resolve.go): same language, the route's file,
 // then its directory and the files it imports; a qualifier bound by an import
 // only inside the imported files; never by a bare name across the repo for
-// Go. Only functions and methods are candidates. Failures are logged, not
-// fatal.
+// Go. Only functions and methods are candidates, and classes for Django and
+// DRF (class-based views, viewsets). Failures are logged, not fatal.
 func (idx *Indexer) linkRouteHandlers(
 	ctx context.Context,
 	repoName string,
@@ -184,18 +190,32 @@ func (idx *Indexer) linkRouteHandlers(
 		sites[f] = loaded[f]
 	}
 
-	handlers := make(map[string][]models.Symbol, len(symbolsByFile))
-	for file, syms := range symbolsByFile {
-		for _, s := range syms {
-			if s.Kind == "function" || s.Kind == "method" {
-				handlers[file] = append(handlers[file], s)
+	// One resolver per candidate set: classes are only candidates for the
+	// frameworks that allow them, so they never shadow a function elsewhere.
+	resolvers := make(map[bool]*resolver, 2)
+	resolverFor := func(classes bool) *resolver {
+		if r, ok := resolvers[classes]; ok {
+			return r
+		}
+		handlers := make(map[string][]models.Symbol, len(symbolsByFile))
+		for file, syms := range symbolsByFile {
+			for _, s := range syms {
+				if s.Kind == "function" || s.Kind == "method" || (classes && s.Kind == "class") {
+					handlers[file] = append(handlers[file], s)
+				}
 			}
 		}
+		r := newResolver(handlers)
+		r.goModule = goModulePath(idx.repoRoot)
+		resolvers[classes] = r
+		return r
 	}
-	res := newResolver(handlers)
-	res.goModule = goModulePath(idx.repoRoot)
 
-	scopes := make(map[string]importScope)
+	type scopeKey struct {
+		file    string
+		classes bool
+	}
+	scopes := make(map[scopeKey]importScope)
 	links := make(map[int64]int64)
 	for _, u := range unlinked {
 		// The route's file may have no symbols (module-level JS), so its
@@ -206,10 +226,12 @@ func (idx *Indexer) linkRouteHandlers(
 		}
 		family := languageFamily(adapter.Name())
 		syms := symbolsByFile[u.FilePath]
-		scope, ok := scopes[u.FilePath]
+		classes := classHandlerFrameworks[u.Framework]
+		res := resolverFor(classes)
+		scope, ok := scopes[scopeKey{u.FilePath, classes}]
 		if !ok {
 			scope = res.imports(family, u.FilePath, sites[u.FilePath])
-			scopes[u.FilePath] = scope
+			scopes[scopeKey{u.FilePath, classes}] = scope
 		}
 		container := ""
 		if s, ok := enclosingSymbol(syms, u.StartLine); ok {
@@ -260,6 +282,7 @@ func (e *Extractor) ExtractRoutes(
 	cursor.Exec(query, tree.RootNode())
 
 	prefixes := make(map[string]string) // router variable → prefix
+	django := djangoRoutes{source: source, filePath: filePath}
 	var routes []ExtractedRoute
 	var receivers []string // parallel to routes: receiver text, for prefix lookup
 
@@ -285,6 +308,10 @@ func (e *Extractor) ExtractRoutes(
 			}
 			s, _ := safeNodeContent(n, source)
 			return s
+		}
+
+		if adapter.Name() == "python" && django.add(caps, text) {
+			continue // urlpatterns, DRF router: built after the loop
 		}
 
 		if caps["prefix.var"] != nil {
@@ -330,7 +357,7 @@ func (e *Extractor) ExtractRoutes(
 			kept = append(kept, r)
 		}
 	}
-	return kept, nil
+	return append(kept, django.routes()...), nil
 }
 
 // pythonRoutes builds routes for one matched FastAPI/Flask decorator.
