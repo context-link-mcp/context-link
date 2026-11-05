@@ -4,6 +4,9 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ## [Unreleased]
 
+### Added
+- **Index runs are serialised across processes.** `IndexRepo` takes an OS advisory lock on `<db-path>.lock` (`LockFileEx` on Windows, `flock` on Unix) after its in-process run slot and holds it until the run ends, so `index`, `extract` (which indexes first) and `serve` (`reindex_project`, `--watch`) in separate processes no longer interleave their multi-transaction runs on one database. A run that finds the lock held logs `waiting for another index run on <db>` once and polls every 150 ms until it gets the lock or its context ends (Ctrl-C, `reindex_project` timeout). Readers never take the lock. The lock file (mode 0600, empty) stays next to the database; the OS releases the lock when a process exits, so a crash cannot leave a stale lock. New package `internal/store/filelock`; `store.DB.Path()` returns the path `store.Open` was given (DBs with no path are not locked). `golang.org/x/sys` is now a direct dependency (it was already indirect).
+
 ## [1.4.0] - 2026-11-04
 
 Upgrading: migrations 012 and 013 make the first index after upgrading a full re-index (memories are kept and relinked). Behaviour changes to check: the default database moved to the project root, symbol names resolve strictly (ambiguous or partial names are errors, never a silent guess), and some tool inputs that were silently accepted are now rejected (see Changed).

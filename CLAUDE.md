@@ -61,6 +61,7 @@ These are enforced — see `.claude/rules/coding-standards.md` for full details.
 - `sync.RWMutex` for read-heavy shared state
 - Single SQLite writer (connection pool max=1)
 - Index runs are serialised per `indexer.Indexer` (`IndexRepo` holds a ctx-aware run slot); every indexer in one process that writes the same repo must share one `Indexer` (serve passes its indexer to the watcher via `WithIndexer`). Shutdown order: stop the watcher, `Indexer.Drain()`, then close embedder and DB
+- Index runs are serialised per DB across processes by `<db>.lock` (`internal/store/filelock`: `LockFileEx`/`flock`, polled try-lock that honours ctx), taken in `IndexRepo` after the run slot and released with it; the path comes from `store.DB.Path()` (no path = no lock). Readers never lock
 
 ### Database
 - Parameterized queries only — no string interpolation in SQL
@@ -115,6 +116,7 @@ internal/indexer/adapters/         12 language adapters (TS, TSX, Go, Python, JS
 internal/store/symbols.go          Symbol CRUD + BFS transitive dependency resolution
 internal/indexer/resolve.go        Scoped call resolution: same language, file → dir → imports → repo (unique names only); import-bound receivers
 internal/store/dependencies.go     Dependency edge CRUD
+internal/store/filelock/           Cross-process advisory lock on <db>.lock (LockFileEx / flock) serialising index runs
 internal/store/callsites.go        Raw call sites per file + pending_resolution marks (crash-safe re-resolution of unchanged callers)
 internal/vectorstore/model2vec.go  Built-in Model2Vec embedder (potion-base-4M, 128-dim, zero-config)
 internal/vectorstore/onnx.go       Optional ONNX embedder (all-MiniLM-L6-v2, 384-dim)

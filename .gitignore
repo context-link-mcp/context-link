@@ -11,6 +11,7 @@
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.lock
 
 # Config (user-specific)
 .context-link.yaml

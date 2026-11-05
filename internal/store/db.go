@@ -16,6 +16,17 @@ const driverName = "sqlite"
 // DB wraps a *sql.DB with context-link specific helpers.
 type DB struct {
 	*sql.DB
+	path string
+}
+
+// Path returns the filesystem path the database was opened from, or "" for
+// a DB not created by Open. The indexer locks <Path()>.lock across processes
+// for the duration of an index run (see internal/store/filelock).
+func (db *DB) Path() string {
+	if db == nil {
+		return ""
+	}
+	return db.path
 }
 
 // Open opens (or creates) the SQLite database at the given path and applies
@@ -54,5 +65,5 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("store: failed to set database file permissions: %w", err)
 	}
 
-	return &DB{db}, nil
+	return &DB{DB: db, path: path}, nil
 }
