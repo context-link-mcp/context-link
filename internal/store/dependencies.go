@@ -100,6 +100,9 @@ func DeleteDependenciesByCallerFile(ctx context.Context, db *DB, repoName, fileP
 
 // GetCalleeNamesForSymbols returns a map of caller ID → []callee name for all given caller IDs.
 // Used during keyword enrichment to add function call names to embedding and FTS5 data.
+// Each caller's names are sorted (by name, then callee ID), so the result does
+// not depend on edge insertion order. A callee linked by several edge kinds
+// appears once per edge.
 // Any number of IDs is accepted (a first index can hold far more symbols than
 // SQLite's 32,766 bind parameters); they are queried in chunks.
 func GetCalleeNamesForSymbols(ctx context.Context, db *DB, callerIDs []int64) (map[int64][]string, error) {
@@ -109,7 +112,8 @@ func GetCalleeNamesForSymbols(ctx context.Context, db *DB, callerIDs []int64) (m
 			`SELECT d.caller_id, s.name
 			 FROM dependencies d
 			 JOIN symbols s ON s.id = d.callee_id
-			 WHERE d.caller_id IN (`+placeholders(len(chunk))+`)`,
+			 WHERE d.caller_id IN (`+placeholders(len(chunk))+`)
+			 ORDER BY d.caller_id, s.name, s.id`,
 			idArgs(chunk)...,
 		)
 		if err != nil {
