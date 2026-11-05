@@ -4,9 +4,12 @@ All notable changes to context-link. Dates are release-tag dates. Versions befor
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-04
+
+Upgrading: migrations 012 and 013 make the first index after upgrading a full re-index (memories are kept and relinked). Behaviour changes to check: the default database moved to the project root, symbol names resolve strictly (ambiguous or partial names are errors, never a silent guess), and some tool inputs that were silently accepted are now rejected (see Changed).
+
 ### Added
 - `extract --dependency-reserve` (default `25`): percent of the budget kept for the code of the matches' direct dependencies before lower-ranked matches are packed. What the dependencies leave unused goes back to the remaining matches, then skeletons. `0` restores the 1.3.0 packing. Library: `Options.DependencyReservePercent` (0 disables, clamped to 90).
-
 - MCP tool responses gain additive fields: `truncated` on `get_call_tree`, `get_blast_radius`, `get_tests_for_symbol` and `find_http_routes` (plus `routes_truncated` / `matches_truncated` there); `truncated`, `truncated_reason` (`limit` or `scan_cap`) and `symbols_scanned` on `search_code_patterns`; `match_type` (`exact` or `fuzzy`) on the resolved symbol of `get_code_by_symbol` (per result), `get_call_tree`, `get_blast_radius`, `get_symbol_usages` and `get_tests_for_symbol`; `candidates` on a failed `get_code_by_symbol` batch item; `symbols_total` and `files_skipped` on `reindex_project`. `IndexStats` gains `SymbolsRemoved` and `SymbolsTotal`.
 
 ### Changed
