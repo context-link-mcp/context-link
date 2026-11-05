@@ -83,6 +83,7 @@ internal/
         swift_deps.scm          # Swift dependency extraction (imports, calls, inheritance specifiers)
   store/
     db.go                       # SQLite connection (WAL mode, 0600 perms, single-writer pool)
+    filelock/                   # Cross-process advisory lock on <db>.lock serialising index runs
     migrate.go                  # Forward-only embedded migration runner
     files.go                    # File registry CRUD (upsert, get, list, delete)
     symbols.go                  # Symbol CRUD (batch insert, search, fuzzy match, BFS transitive deps, dead code detection)
@@ -234,6 +235,8 @@ Version is injected at build time via `-X main.version=<tag>` ldflags, passed th
 ### File Watcher
 
 The `--watch` flag on the `serve` command starts an fsnotify-based file watcher alongside the MCP server. It recursively watches the project directory, debounces changes at 500ms, then triggers a full incremental `IndexRepo()` (already fast due to content-hash skipping). It watches exactly the directories the walker indexes (`indexer.DirFilter`: `node_modules`, `.git`, `vendor`, `__pycache__`, ... and matches of the root or nested `.gitignore` files are excluded; each `.gitignore` is read once, when a path below it is first checked), adds directories created later, and treats renames like removals. The watcher re-indexes through the server's `Indexer`, whose runs are serialised, so watcher flushes and `reindex_project` calls never overlap; on shutdown the watcher waits for its in-flight run and `Indexer.Drain()` waits for the rest before the embedder and DB are closed.
+
+Across processes (`index`, `extract`, `serve` on the same database), `IndexRepo` additionally holds an OS advisory lock on `<db-path>.lock` (`internal/store/filelock`: `LockFileEx` on Windows, `flock` on Unix) for the whole run, taken after the in-process run slot. A waiting run polls a non-blocking try-lock every 150 ms, logs once, and gives up when its context ends. The OS releases the lock when the holder exits, so there are no stale locks; the empty lock file stays on disk. Readers do not lock: WAL gives them consistent snapshots.
 
 ## Design Principles
 

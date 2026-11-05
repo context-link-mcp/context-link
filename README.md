@@ -244,6 +244,8 @@ While the Quick Start covers standard setups, `context-link` supports advanced w
 ### Advanced Indexing
 
 The index is stored in `.context-link.db` in the project root (the `--project-root` or `[path]` you index, whatever the current directory), so `index`, `serve` and `extract` find the same database without `--db-path`. Re-run anytime — only changed files are re-processed. Semantic search embeddings are generated automatically.
+
+**Concurrent runs:** index runs on one database are serialised across processes by an OS file lock on `<db-path>.lock` (e.g. `.context-link.db.lock`). If `index`, `extract` or a `serve` re-index (`reindex_project`, `--watch`) starts while another process is indexing the same database, it logs `waiting for another index run on <db>` and waits (Ctrl-C or the tool timeout cancels the wait). Queries never wait. The empty lock file is left in place and can be ignored or deleted while nothing is indexing; the OS drops the lock when a process exits, so a crashed run cannot leave it held. On network filesystems the lock is only as reliable as the filesystem's locking.
 ```bash
 ./bin/context-link index --project-root /path/to/your/project
 ```
