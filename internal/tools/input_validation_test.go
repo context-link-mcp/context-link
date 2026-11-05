@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -188,6 +189,82 @@ func TestCleanRepoPath(t *testing.T) {
 			got, err := cleanRepoPath(root, tc.in)
 			if tc.wantErr {
 				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// dirLinkOrSkip links link to the directory target: a symlink, or on Windows
+// without the symlink privilege a junction (it then returns true). It skips
+// the test if neither works.
+func dirLinkOrSkip(t *testing.T, target, link string) (junction bool) {
+	t.Helper()
+	err := os.Symlink(target, link)
+	if err != nil && runtime.GOOS == "windows" {
+		out, jerr := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+		if jerr == nil {
+			return true
+		}
+		err = fmt.Errorf("%w; mklink /J: %v: %s", err, jerr, out)
+	}
+	if err != nil {
+		t.Skipf("directory links not supported here: %v", err)
+	}
+	return false
+}
+
+// TestCleanRepoPath_Symlinks: a path through a symlink that leaves the root is
+// refused, whether its target exists or not, before any caller stats it
+// (master only checked the path string, so os.Stat followed the link out).
+// Links inside the root and missing files under real directories are kept,
+// under their lexical path.
+func TestCleanRepoPath_Symlinks(t *testing.T) {
+	t.Parallel()
+	outer := t.TempDir()
+	root := filepath.Join(outer, "proj")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src", "a.go"), []byte("package src\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(outer, "secret"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outer, "secret", "key.go"), []byte("package secret\n"), 0o644))
+	// Windows without developer mode can't create symlinks; directory
+	// junctions need no privilege. A junction is refused even inside the root
+	// (EvalSymlinks can't resolve it; the walker never indexes through one).
+	fileLinks := os.Symlink(filepath.Join(outer, "secret", "key.go"), filepath.Join(root, "out.go")) == nil
+	dirLinkOrSkip(t, filepath.Join(outer, "secret"), filepath.Join(root, "outdir"))
+	junction := dirLinkOrSkip(t, filepath.Join(root, "src"), filepath.Join(root, "indir"))
+	inside := "indir/a.go"
+	if junction {
+		inside = ""
+	}
+
+	type testCase struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}
+	var tests []testCase
+	if fileLinks {
+		tests = append(tests, testCase{"file link out of the root", "out.go", "", true})
+	}
+	tests = append(tests, []testCase{
+		{"file under a dir link out", "outdir/key.go", "", true},
+		{"missing file under a dir link out", "outdir/missing.go", "", true},
+		{"absolute path through a link out", filepath.Join(root, "outdir", "key.go"), "", true},
+		{"dir link inside the root", "indir/a.go", inside, junction},
+		{"real file", "src/a.go", "src/a.go", false},
+		{"missing file under a real dir", "src/missing.go", "src/missing.go", false},
+		{"missing dirs", "new/pkg/x.go", "new/pkg/x.go", false},
+	}...)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := cleanRepoPath(root, tc.in)
+			if tc.wantErr {
+				assert.ErrorIs(t, err, errPathOutsideRoot)
 				return
 			}
 			require.NoError(t, err)
