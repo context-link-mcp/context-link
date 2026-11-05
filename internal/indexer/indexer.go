@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/context-link-mcp/context-link/internal/store"
+	"github.com/context-link-mcp/context-link/internal/store/filelock"
 	"github.com/context-link-mcp/context-link/internal/vectorstore"
 	"github.com/context-link-mcp/context-link/pkg/models"
 )
@@ -67,6 +68,11 @@ var ErrIndexerClosed = errors.New("indexer: closed")
 // process (serve's reindex_project tool and its --watch watcher) must share
 // one Indexer, because overlapping runs replace the same files' rows and race
 // on the Indexer's fields.
+//
+// Index runs on the same database file are also serialised across Indexers
+// and processes (index, extract, serve) by an OS advisory lock on
+// "<db path>.lock", taken after the in-process wait and held until the run
+// ends. Databases without a file path (see store.DB.Path) are not locked.
 type Indexer struct {
 	registry  *LanguageRegistry
 	pools     *ParserPoolManager
@@ -127,6 +133,28 @@ func (idx *Indexer) acquire(ctx context.Context) error {
 // release ends the index run started by acquire.
 func (idx *Indexer) release() { <-idx.run }
 
+// lockPoll is how often a run waiting for another process's index run
+// retries the database's lock file.
+const lockPoll = 150 * time.Millisecond
+
+// lockDB takes the cross-process lock for the database idx indexes, waiting
+// (and logging once) while another index run holds it, until ctx ends. It
+// returns a nil Lock, which unlocks as a no-op, when the database has no
+// file to lock beside.
+func (idx *Indexer) lockDB(ctx context.Context) (*filelock.Lock, error) {
+	path := idx.db.Path()
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil, nil
+	}
+	l, err := filelock.Acquire(ctx, path+".lock", lockPoll, func() {
+		slog.Info("indexer: waiting for another index run on " + path)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("indexer: failed to lock database for indexing: %w", err)
+	}
+	return l, nil
+}
+
 // Drain waits for the index run in progress, if any, and makes every later
 // IndexRepo call fail with ErrIndexerClosed. Call it before closing the
 // embedder or database the Indexer uses.
@@ -137,13 +165,24 @@ func (idx *Indexer) Drain() {
 }
 
 // IndexRepo indexes a repository at the given root path. It first waits for
-// an index run already in progress on idx (see Indexer); if ctx ends while it
+// an index run already in progress on idx, then for one holding the
+// database's lock file in any process (see Indexer); if ctx ends while it
 // waits, it returns ctx's error without indexing.
 func (idx *Indexer) IndexRepo(ctx context.Context, repoName, repoRoot string) (*IndexStats, error) {
 	if err := idx.acquire(ctx); err != nil {
 		return nil, err
 	}
 	defer idx.release()
+
+	lock, err := idx.lockDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if uerr := lock.Unlock(); uerr != nil {
+			slog.Warn("indexer: failed to release database lock", "error", uerr)
+		}
+	}()
 
 	start := time.Now()
 	stats := &IndexStats{}
