@@ -2,6 +2,8 @@ package indexer
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +71,80 @@ func TestIndexRepo_CancelledRunIsRetried(t *testing.T) {
 	stats, err = NewIndexer(registry, db, 1, vectorstore.NewMockEmbedder(0)).IndexRepo(context.Background(), "repo", root)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.FilesUnchanged, "a completed run makes the next one incremental")
+}
+
+// brokenAdapter is the Python grammar under its own name and extension with a
+// symbol query that does not compile, so every file it handles fails in
+// processFile (the same path as a parse failure).
+type brokenAdapter struct{ LanguageAdapter }
+
+func (brokenAdapter) Name() string           { return "broken" }
+func (brokenAdapter) Extensions() []string   { return []string{".broken"} }
+func (brokenAdapter) GetSymbolQuery() []byte { return []byte("((unclosed") }
+
+// TestIndexRepo_FilesSkipped: a file that fails to process is counted in
+// FilesSkipped, also in a run that deletes another file. Before #28 the
+// deleted files were subtracted from the discovered ones too, so the second
+// case reported 0 skipped.
+func TestIndexRepo_FilesSkipped(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		first       map[string]string // files of a first, clean run
+		second      map[string]string // the files present at the run checked
+		wantSkipped int
+		wantIndexed int
+		wantDeleted int
+	}{
+		{
+			name:        "one failing file",
+			second:      map[string]string{"good.py": "def good():\n    return 1\n", "bad.broken": "def bad():\n    return 2\n"},
+			wantSkipped: 1, wantIndexed: 1,
+		},
+		{
+			name:        "failing file and a deleted file",
+			first:       map[string]string{"good.py": "def good():\n    return 1\n", "gone.py": "def gone():\n    return 3\n"},
+			second:      map[string]string{"good.py": "def good():\n    return 1\n", "bad.broken": "def bad():\n    return 2\n"},
+			wantSkipped: 1, wantDeleted: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			db := setupTestDB(t)
+			registry := newPythonRegistry(t)
+			require.NoError(t, registry.Register(brokenAdapter{adapters.NewPythonAdapter()}))
+			root := t.TempDir()
+			idx := NewIndexer(registry, db, 1, nil)
+
+			if tc.first != nil {
+				for name, src := range tc.first {
+					writeGoFile(t, root, name, src)
+				}
+				stats, err := idx.IndexRepo(ctx, "repo", root)
+				require.NoError(t, err)
+				require.Zero(t, stats.FilesSkipped)
+				for name := range tc.first {
+					if _, keep := tc.second[name]; !keep {
+						require.NoError(t, os.Remove(filepath.Join(root, name)))
+					}
+				}
+			}
+			for name, src := range tc.second {
+				writeGoFile(t, root, name, src)
+			}
+
+			stats, err := idx.IndexRepo(ctx, "repo", root)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSkipped, stats.FilesSkipped)
+			assert.Equal(t, tc.wantIndexed, stats.FilesIndexed)
+			assert.Equal(t, tc.wantDeleted, stats.FilesDeleted)
+			assert.Equal(t, 1, stats.Errors)
+			require.Len(t, stats.FailedFiles, 1)
+			assert.Equal(t, "bad.broken", stats.FailedFiles[0].Path)
+		})
+	}
 }
 
 // TestIndexRepo_FailedStoreKeepsPreviousIndex guards against a DB error in the
