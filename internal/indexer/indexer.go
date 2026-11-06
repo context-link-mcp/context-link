@@ -654,7 +654,9 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 	}
 
 	relinked := 0
+	indexed := make(map[string]bool, len(filePaths))
 	for _, path := range filePaths {
+		indexed[path] = true
 		// symbolsByFile lists a file's symbols by start line. Same-name symbols
 		// in one file (overloads, several init()) share a key: the first one,
 		// the lowest start line, takes the memories, and the key is consumed so
@@ -667,17 +669,63 @@ func (idx *Indexer) relinkOrphanedMemories(ctx context.Context, repoName string,
 				continue
 			}
 			delete(orphanMap, key)
-			for _, m := range orphans {
-				if err := store.RelinkMemory(ctx, idx.db, m.ID, s.ID); err != nil {
-					slog.Warn("indexer: failed to relink memory", "memory_id", m.ID, "symbol", s.QualifiedName, "error", err)
-					continue
-				}
-				relinked++
-				slog.Debug("indexer: relinked orphaned memory", "memory_id", m.ID, "symbol", s.QualifiedName)
-			}
+			relinked += idx.relinkMemories(ctx, orphans, s)
+		}
+	}
+
+	// Fallback for renamed symbols: an orphan of an indexed file whose
+	// qualified name no longer exists (a method that gained its container,
+	// such as Kotlin `find` → `Repo.find` after migration 012 or C++ `bar` →
+	// `Foo.bar` after 014) relinks by bare name within its file, but only to
+	// the one symbol of that name there. Memories record no kind, so the
+	// unique name in the file is the whole check.
+	for _, orphans := range orphanMap {
+		if len(orphans) == 0 || !indexed[orphans[0].LastKnownFile] {
+			continue
+		}
+		if s, ok := uniqueSymbolByName(symbolsByFile[orphans[0].LastKnownFile], bareName(orphans[0].LastKnownSymbol)); ok {
+			relinked += idx.relinkMemories(ctx, orphans, s)
 		}
 	}
 	return relinked
+}
+
+// relinkMemories attaches the orphaned memories to s and returns how many
+// were relinked.
+func (idx *Indexer) relinkMemories(ctx context.Context, orphans []models.Memory, s models.Symbol) int {
+	relinked := 0
+	for _, m := range orphans {
+		if err := store.RelinkMemory(ctx, idx.db, m.ID, s.ID); err != nil {
+			slog.Warn("indexer: failed to relink memory", "memory_id", m.ID, "symbol", s.QualifiedName, "error", err)
+			continue
+		}
+		relinked++
+		slog.Debug("indexer: relinked orphaned memory", "memory_id", m.ID, "symbol", s.QualifiedName,
+			"last_known_symbol", m.LastKnownSymbol)
+	}
+	return relinked
+}
+
+// bareName returns the last segment of a qualified name: "Repo.find" and
+// "find" give "find", "ns::Foo::bar" gives "bar".
+func bareName(qualified string) string {
+	if i := strings.LastIndexAny(qualified, ".:"); i >= 0 {
+		return qualified[i+1:]
+	}
+	return qualified
+}
+
+// uniqueSymbolByName returns the symbol of syms named name, if exactly one is.
+func uniqueSymbolByName(syms []models.Symbol, name string) (models.Symbol, bool) {
+	var found models.Symbol
+	n := 0
+	for _, s := range syms {
+		if s.Name == name {
+			found = s
+			n++
+		}
+	}
+	return found, n == 1 && name != ""
 }
 
 // generateEmbeddings generates and stores vector embeddings and FTS5 entries

@@ -40,7 +40,7 @@ func RegisterSearchCodePatternsTool(
 				"\n\n"+
 				"Results are ordered by file path and start line. 'truncated' is true when more "+
 				"symbols match than 'limit' (truncated_reason 'limit') or when the scan stopped after "+
-				"50,000 candidate symbols (truncated_reason 'scan_cap'); narrow the pattern or use "+
+				fmt.Sprintf("%d", MaxPatternScan)+" candidate symbols (truncated_reason 'scan_cap'); narrow the pattern or use "+
 				"file_path_prefix/kind in that case."+
 				"\n\n"+
 				"Example: pattern='errors\\\\.New\\\\(\".*\"\\\\)' finds error sentinel definitions.",
@@ -74,13 +74,15 @@ type patternMatchResult struct {
 	MatchIndices  []int  `json:"match_indices"` // [start, end] positions in code_block
 }
 
-// Scan bounds for search_code_patterns: candidates are read in pages and
-// matched in Go; the scan stops after maxPatternScan candidates so a broad
-// pattern over a huge repo stays within the tool timeout.
-const (
-	patternPageSize = 500
-	maxPatternScan  = 50000
-)
+// MaxPatternScan is the number of candidate symbols search_code_patterns
+// reads (in pages of patternPageSize, matched in Go) before it stops with
+// truncated_reason "scan_cap", so a broad pattern over a huge repo stays
+// within the tool timeout. It is checked after each page, so a scan may read
+// up to one page more.
+const MaxPatternScan = 50_000
+
+// patternPageSize is the number of candidates read per query.
+const patternPageSize = 500
 
 // searchCodePatternsHandler returns the MCP tool handler for search_code_patterns.
 func searchCodePatternsHandler(
@@ -155,7 +157,7 @@ func searchCodePatternsHandler(
 			if len(page) < patternPageSize {
 				break
 			}
-			if scanned >= maxPatternScan {
+			if scanned >= MaxPatternScan {
 				truncatedReason = "scan_cap"
 				break
 			}

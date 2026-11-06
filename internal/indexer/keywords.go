@@ -28,7 +28,7 @@ var behavioralPatterns = []string{
 // Sources, in priority order:
 //  1. Existing regex extraction (error types, catch blocks, behavioral patterns)
 //  2. Type names from the symbol signature
-//  3. Callee names from the dependency graph (sorted: the graph has no order)
+//  3. Callee names from the dependency graph (sorted, whatever order they come in)
 //  4. Identifiers from variable/const initializers
 //
 // Returns a deduplicated, space-separated keyword string for embedding +
@@ -66,7 +66,9 @@ func BuildSymbolKeywords(codeBlock, kind string, calleeNames []string) string {
 		addKeyword(typeName)
 	}
 
-	// Source 3: Callee names from dependency graph.
+	// Source 3: Callee names from dependency graph. store.GetCalleeNamesForSymbols
+	// already returns them sorted; the copy and sort keep this exported
+	// function's result independent of its caller's order.
 	callees := append([]string(nil), calleeNames...)
 	sort.Strings(callees)
 	for _, callee := range callees {

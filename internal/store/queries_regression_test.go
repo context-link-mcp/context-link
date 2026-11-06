@@ -113,6 +113,35 @@ func TestIDQueries_MoreThanSQLiteParamLimit(t *testing.T) {
 	}
 }
 
+// TestGetCalleeNamesForSymbols_Sorted: each caller's callee names come back
+// sorted, whatever order the edges were inserted in (master returned them in
+// row order).
+func TestGetCalleeNamesForSymbols_Sorted(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+	syms := seedSymbols(t, db,
+		models.Symbol{Name: "caller", FilePath: "a.go"},
+		models.Symbol{Name: "other", FilePath: "a.go", StartLine: 3, EndLine: 3},
+		models.Symbol{Name: "zeta", FilePath: "z.go"},
+		models.Symbol{Name: "alpha", FilePath: "y.go"},
+		models.Symbol{Name: "mid", FilePath: "x.go"},
+	)
+	var deps []models.Dependency
+	for _, callee := range []string{"zeta", "mid", "alpha"} {
+		deps = append(deps,
+			models.Dependency{CallerID: syms["caller"].ID, CalleeID: syms[callee].ID, Kind: "call"},
+			models.Dependency{CallerID: syms["other"].ID, CalleeID: syms[callee].ID, Kind: "call"},
+		)
+	}
+	require.NoError(t, BatchInsertDependencies(ctx, db, deps))
+
+	got, err := GetCalleeNamesForSymbols(ctx, db, []int64{syms["other"].ID, syms["caller"].ID})
+	require.NoError(t, err)
+	want := []string{"alpha", "mid", "zeta"}
+	assert.Equal(t, map[int64][]string{syms["caller"].ID: want, syms["other"].ID: want}, got)
+}
+
 func TestForEachIDChunk(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
