@@ -391,6 +391,9 @@ var (
 	// goExactMatch is Go 1.22 net/http's {$}, which anchors the end of a
 	// pattern ("/{$}" matches only "/") and is not a parameter.
 	goExactMatch = regexp.MustCompile(`\{\$\}`)
+	// springCatchAll matches Spring's {*name} and a "**" segment, which match
+	// the rest of the path.
+	springCatchAll = regexp.MustCompile(`\{\*[a-zA-Z_]\w*\}|(^|/)\*\*($|/)`)
 	// colonParam matches Express/Gin :name with an optional Express regex
 	// constraint (:id(\d+)) and optional/repeat modifier (:id?, :id*, :id+).
 	colonParam = regexp.MustCompile(`:[a-zA-Z_]\w*(?:\([^)]*\))?([?*+])?`)
@@ -404,7 +407,8 @@ var (
 // "{id}", chi "{id}" / "{id:[0-9]+}", Echo/Gin ":id" and Flask "<id>" /
 // "<int:id>" give ":param"; Flask "<path:p>", FastAPI "{p:path}", Go 1.22
 // "{p...}", Express/Echo/chi "*", Express "*splat" / ":p*" / ":p+" and Gin
-// "*p" give "*". Go's "{$}" end anchor is dropped.
+// "*p" give "*". Spring "{id}" / "{id:\d+}" give ":param", Spring "{*p}" and
+// "**" give "*". Go's "{$}" end anchor is dropped.
 func NormalizePath(path string) string {
 	path = flaskParam.ReplaceAllStringFunc(path, func(m string) string {
 		if sub := flaskParam.FindStringSubmatch(m); sub[1] == "path" {
@@ -413,6 +417,12 @@ func NormalizePath(path string) string {
 		return ":param"
 	})
 	path = goExactMatch.ReplaceAllString(path, "")
+	path = springCatchAll.ReplaceAllStringFunc(path, func(m string) string {
+		if strings.HasPrefix(m, "{") {
+			return catchAll
+		}
+		return strings.Replace(m, "**", catchAll, 1)
+	})
 	path = braceParam.ReplaceAllStringFunc(path, func(m string) string {
 		if sub := braceParam.FindStringSubmatch(m); sub[1] == "..." || sub[2] == "path" {
 			return catchAll

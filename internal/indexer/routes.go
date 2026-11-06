@@ -36,9 +36,15 @@ type ExtractedRoute struct {
 	// ("handlers" in Go handlers.List), empty for a plain name. A qualified
 	// handler is resolved like a method or package call (see resolve.go).
 	HandlerQualifier string
-	Framework        string // "fastapi", "flask", "express", "gin", ...
-	FilePath         string
-	StartLine        int // 1-based
+	// HandlerLine is the 1-based start line of the handler symbol when the
+	// route is declared on the handler itself (Spring annotations): the
+	// handler is the method of that name starting on that line in the same
+	// file, and is never resolved across files. Handler is then
+	// "Class.method". 0 for a handler named at a registration.
+	HandlerLine int
+	Framework   string // "fastapi", "flask", "express", "gin", ...
+	FilePath    string
+	StartLine   int // 1-based
 }
 
 // pythonRouteVerbs maps decorator attribute names to HTTP methods. "route" and
@@ -123,9 +129,20 @@ func (idx *Indexer) storeRoutes(
 			if route.NormalizedPath == "" {
 				route.NormalizedPath = store.NormalizePath(er.PathPattern)
 			}
-			// A qualified handler (handlers.List) is not looked up by bare
-			// name: a same-named function in this file is another symbol.
-			if er.Handler != "" && er.HandlerQualifier == "" {
+			if er.HandlerLine > 0 {
+				// The annotated method itself: same file, name and line, so
+				// overloads and same-named methods of other classes don't match.
+				name := er.Handler[strings.LastIndexByte(er.Handler, '.')+1:]
+				for _, sym := range symbolsByFile[er.FilePath] {
+					if sym.Name == name && sym.StartLine == er.HandlerLine && routeHandlerKind(er.Framework, sym.Kind) {
+						id := sym.ID
+						route.HandlerSymbolID = &id
+						break
+					}
+				}
+			} else if er.Handler != "" && er.HandlerQualifier == "" {
+				// A qualified handler (handlers.List) is not looked up by bare
+				// name: a same-named function in this file is another symbol.
 				for _, sym := range symbolsByFile[er.FilePath] {
 					if sym.Name == er.Handler && routeHandlerKind(er.Framework, sym.Kind) {
 						id := sym.ID
@@ -165,6 +182,16 @@ func (idx *Indexer) linkRouteHandlers(
 		slog.Warn("indexer: failed to load unlinked routes", "error", err)
 		return
 	}
+	// A Spring handler is the annotated method in the route's own file,
+	// linked by storeRoutes when that file is indexed; a Spring route
+	// without one has no handler anywhere else.
+	kept := unlinked[:0]
+	for _, u := range unlinked {
+		if u.Framework != springFramework {
+			kept = append(kept, u)
+		}
+	}
+	unlinked = kept
 	if len(unlinked) == 0 {
 		return
 	}
@@ -269,6 +296,11 @@ func (e *Extractor) ExtractRoutes(
 		// Go needs the receiver's type and the call's AST ancestry (chi
 		// r.Route nesting), so it has its own pass over the matches.
 		return goRoutes(ctx, tree, source, adapter, queryBytes, filePath)
+	}
+	if adapter.Name() == "java" || adapter.Name() == "kotlin" {
+		// Spring routes are annotations on methods, with the class prefix
+		// found by walking up the AST.
+		return springRoutes(ctx, tree, source, adapter, queryBytes, filePath)
 	}
 
 	query, err := sitter.NewQuery(queryBytes, adapter.GetLanguage())

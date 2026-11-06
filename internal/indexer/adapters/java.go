@@ -13,6 +13,9 @@ var javaSymbolsQuery []byte
 //go:embed queries/java_deps.scm
 var javaDepsQuery []byte
 
+//go:embed queries/java_routes.scm
+var javaRoutesQuery []byte
+
 // JavaAdapter implements the LanguageAdapter interface for Java source files (.java).
 // It uses the Tree-sitter Java grammar for parsing.
 type JavaAdapter struct{}
@@ -45,4 +48,10 @@ func (a *JavaAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting Java dependencies.
 func (a *JavaAdapter) GetDependencyQuery() []byte {
 	return javaDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Spring route
+// annotations (@GetMapping, @RequestMapping, ...).
+func (a *JavaAdapter) GetRouteQuery() []byte {
+	return javaRoutesQuery
 }
