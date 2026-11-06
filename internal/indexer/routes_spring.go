@@ -299,7 +299,7 @@ func unescapeJVMString(s string) string {
 				j++
 			}
 			if j+4 <= len(s) {
-				if r, err := strconv.ParseUint(s[j:j+4], 16, 32); err == nil {
+				if r, err := strconv.ParseUint(s[j:j+4], 16, 16); err == nil {
 					b.WriteRune(rune(r))
 					i = j + 3
 					continue
