@@ -1,0 +1,192 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/users",
+    "normalized_path": "/api/users",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 10,
+    "handler_name": "UserController.list",
+    "handler": "UserController.kt:UserController.list"
+  },
+  {
+    "method": "GET",
+    "path": "/api/users/{id:\\d+}",
+    "normalized_path": "/api/users/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 13,
+    "handler_name": "UserController.get",
+    "handler": "UserController.kt:UserController.get"
+  },
+  {
+    "method": "GET",
+    "path": "/api/users/{id}/avatar",
+    "normalized_path": "/api/users/:param/avatar",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 17,
+    "handler_name": "UserController.get",
+    "handler": "UserController.kt:UserController.get"
+  },
+  {
+    "method": "POST",
+    "path": "/api/users/",
+    "normalized_path": "/api/users/",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 20,
+    "handler_name": "UserController.create",
+    "handler": "UserController.kt:UserController.create"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/users/{id}",
+    "normalized_path": "/api/users/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 23,
+    "handler_name": "UserController.update",
+    "handler": "UserController.kt:UserController.update"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/users/{id}/replace",
+    "normalized_path": "/api/users/:param/replace",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 23,
+    "handler_name": "UserController.update",
+    "handler": "UserController.kt:UserController.update"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/users/remove/{id}",
+    "normalized_path": "/api/users/remove/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 26,
+    "handler_name": "UserController.delete",
+    "handler": "UserController.kt:UserController.delete"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/users/{id}",
+    "normalized_path": "/api/users/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 26,
+    "handler_name": "UserController.delete",
+    "handler": "UserController.kt:UserController.delete"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/users/{id}",
+    "normalized_path": "/api/users/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 31,
+    "handler_name": "UserController.patch",
+    "handler": "UserController.kt:UserController.patch"
+  },
+  {
+    "method": "GET",
+    "path": "/api/users/search",
+    "normalized_path": "/api/users/search",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 34,
+    "handler_name": "UserController.search",
+    "handler": "UserController.kt:UserController.search"
+  },
+  {
+    "method": "POST",
+    "path": "/api/users/bulk",
+    "normalized_path": "/api/users/bulk",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 37,
+    "handler_name": "UserController.bulk",
+    "handler": "UserController.kt:UserController.bulk"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/users/bulk",
+    "normalized_path": "/api/users/bulk",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 37,
+    "handler_name": "UserController.bulk",
+    "handler": "UserController.kt:UserController.bulk"
+  },
+  {
+    "method": "ALL",
+    "path": "/api/users/legacy",
+    "normalized_path": "/api/users/legacy",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 42,
+    "handler_name": "UserController.legacy",
+    "handler": "UserController.kt:UserController.legacy"
+  },
+  {
+    "method": "GET",
+    "path": "/",
+    "normalized_path": "/",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 71,
+    "handler_name": "PageController.home",
+    "handler": "UserController.kt:PageController.home"
+  },
+  {
+    "method": "GET",
+    "path": "/about",
+    "normalized_path": "/about",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 74,
+    "handler_name": "PageController.about",
+    "handler": "UserController.kt:PageController.about"
+  },
+  {
+    "method": "GET",
+    "path": "/v1/orders/{orderId}",
+    "normalized_path": "/v1/orders/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 83,
+    "handler_name": "OrderController.get",
+    "handler": "UserController.kt:OrderController.get"
+  },
+  {
+    "method": "GET",
+    "path": "/v2/orders/{orderId}",
+    "normalized_path": "/v2/orders/:param",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 83,
+    "handler_name": "OrderController.get",
+    "handler": "UserController.kt:OrderController.get"
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/orders",
+    "normalized_path": "/v1/orders",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 86,
+    "handler_name": "OrderController.clear",
+    "handler": "UserController.kt:OrderController.clear"
+  },
+  {
+    "method": "DELETE",
+    "path": "/v2/orders",
+    "normalized_path": "/v2/orders",
+    "framework": "spring",
+    "file": "UserController.kt",
+    "line": 86,
+    "handler_name": "OrderController.clear",
+    "handler": "UserController.kt:OrderController.clear"
+  }
+]

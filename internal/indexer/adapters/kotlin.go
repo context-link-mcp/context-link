@@ -13,6 +13,9 @@ var kotlinSymbolsQuery []byte
 //go:embed queries/kotlin_deps.scm
 var kotlinDepsQuery []byte
 
+//go:embed queries/kotlin_routes.scm
+var kotlinRoutesQuery []byte
+
 // KotlinAdapter implements the LanguageAdapter interface for Kotlin source files (.kt, .kts).
 // It uses the Tree-sitter Kotlin grammar for parsing.
 type KotlinAdapter struct{}
@@ -45,4 +48,10 @@ func (a *KotlinAdapter) GetSymbolQuery() []byte {
 // GetDependencyQuery returns the Scheme query for extracting Kotlin dependencies.
 func (a *KotlinAdapter) GetDependencyQuery() []byte {
 	return kotlinDepsQuery
+}
+
+// GetRouteQuery returns the Scheme query for extracting Spring route
+// annotations (@GetMapping, @RequestMapping, ...).
+func (a *KotlinAdapter) GetRouteQuery() []byte {
+	return kotlinRoutesQuery
 }
